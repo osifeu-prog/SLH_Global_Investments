@@ -134,7 +134,7 @@ class InvestorWalletBot:
             pass
 
         lines: list[str] = []
-        lines.append("🆕 New investor in BOT_FACTORY")
+        lines.append("🆕 New investor in SLH Global Investments")
         lines.append(f"Telegram ID: {tg_user.id}")
         if tg_user.username:
             lines.append(f"Username: @{tg_user.username}")
@@ -802,7 +802,7 @@ class InvestorWalletBot:
         finally:
             db.close()
 
-       async def cmd_whoami(
+    async def cmd_whoami(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
         """נותן חוויית "אני רשום במערכת" + מציג גם SLHA."""
@@ -853,8 +853,7 @@ class InvestorWalletBot:
         finally:
             db.close()
 
-
-       async def cmd_summary(
+    async def cmd_summary(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
         """דשבורד משקיע במסך אחד – כולל SLHA."""
@@ -985,7 +984,6 @@ class InvestorWalletBot:
             await update.message.reply_text("\n".join(lines))
         finally:
             db.close()
-
 
     async def cmd_docs(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
