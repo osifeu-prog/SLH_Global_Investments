@@ -21,8 +21,8 @@ Base = declarative_base()
 
 def _ensure_schema():
     """
-    Soft-migration: מוסיף עמודות חסרות בלי לשבור DB קיים.
-    זה קריטי כשעובדים בלי Alembic ועדיין רוצים להתקדם מהר.
+    Soft-migration: מוסיף עמודות וטבלאות בצורה בטוחה ומהירה.
+    מאפשר להתקדם בלי Alembic בשלב הזה.
     """
     statements: list[str] = [
         # --- users ---
@@ -30,21 +30,25 @@ def _ensure_schema():
         "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();",
         "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();",
 
+        # --- transactions ---
+        "ALTER TABLE IF EXISTS transactions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();",
+
         # --- investor_profiles ---
+        "ALTER TABLE IF EXISTS investor_profiles ADD COLUMN IF NOT EXISTS status VARCHAR(50) NOT NULL DEFAULT 'pending';",
         "ALTER TABLE IF EXISTS investor_profiles ADD COLUMN IF NOT EXISTS note TEXT;",
         "ALTER TABLE IF EXISTS investor_profiles ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();",
         "ALTER TABLE IF EXISTS investor_profiles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();",
 
-        # --- wallets (internal wallets) ---
+        # --- wallets ---
+        "ALTER TABLE IF EXISTS wallets ADD COLUMN IF NOT EXISTS kind VARCHAR(50) NOT NULL DEFAULT 'base';",
+        "ALTER TABLE IF EXISTS wallets ADD COLUMN IF NOT EXISTS deposits_enabled BOOLEAN NOT NULL DEFAULT TRUE;",
+        "ALTER TABLE IF EXISTS wallets ADD COLUMN IF NOT EXISTS withdrawals_enabled BOOLEAN NOT NULL DEFAULT FALSE;",
         "ALTER TABLE IF EXISTS wallets ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();",
         "ALTER TABLE IF EXISTS wallets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();",
 
-        # --- deposits ---
-        "ALTER TABLE IF EXISTS deposits ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();",
-        "ALTER TABLE IF EXISTS deposits ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();",
-        "ALTER TABLE IF EXISTS deposits ADD COLUMN IF NOT EXISTS note TEXT;",
-
         # --- referrals ---
+        "ALTER TABLE IF EXISTS referrals ADD COLUMN IF NOT EXISTS referrer_tid BIGINT;",
+        "ALTER TABLE IF EXISTS referrals ADD COLUMN IF NOT EXISTS referred_tid BIGINT;",
         "ALTER TABLE IF EXISTS referrals ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();",
     ]
 
@@ -55,14 +59,12 @@ def _ensure_schema():
 
 def init_db():
     """
-    1) create_all כדי ליצור טבלאות חסרות.
-    2) soft-migration כדי להוסיף עמודות חסרות בטבלאות קיימות.
+    1) create_all: יוצר טבלאות שחסרות (לפי models)
+    2) soft-migration: מוסיף עמודות שחסרות בטבלאות קיימות
     """
     from app import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
-
-    # חשוב: אחרי create_all
     _ensure_schema()
 
 
