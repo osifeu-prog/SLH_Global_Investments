@@ -309,6 +309,123 @@ class InvestorWalletBot:
         admin_id = settings.ADMIN_USER_ID
         return bool(admin_id) and str(user_id) == str(admin_id)
 
+    def _referral_reward_amount(self) -> Decimal:
+        """
+        גובה הבונוס לכל הצטרפות דרך קישור הפניה (SLHA).
+        נשלט ע"י SLHA_REWARD_REFERRAL, ברירת מחדל 0.00001.
+        """
+        try:
+            val = Decimal(str(settings.SLHA_REWARD_REFERRAL))
+        except Exception:
+            val = Decimal("0.00001")
+        if val < 0:
+            val = Decimal("0")
+        return val
+
+    def _apply_referral_reward(
+        self,
+        new_user_tid: int,
+        referrer_tid: int,
+    ) -> Decimal:
+        """
+        מעניק בונוס SLHA למפנה (וגם למופנה), ורושם טרנזקציה מסוג referral_bonus_slha.
+        מחזיר את סכום הבונוס שנזקף למפנה.
+        """
+        reward = self._referral_reward_amount()
+        if reward <= 0:
+            return Decimal("0")
+
+        if new_user_tid == referrer_tid:
+            # לא נותנים רפררל לעצמי
+            return Decimal("0")
+
+        db = self._db()
+        try:
+            referrer = (
+                db.query(models.User)
+                .filter(models.User.telegram_id == referrer_tid)
+                .first()
+            )
+            new_user = (
+                db.query(models.User)
+                .filter(models.User.telegram_id == new_user_tid)
+                .first()
+            )
+
+            if not referrer or not new_user:
+                return Decimal("0")
+
+            # עדכון SLHA balance – מפנה
+            current_ref = getattr(referrer, "slha_balance", None)
+            if current_ref is None:
+                referrer.slha_balance = reward
+            else:
+                referrer.slha_balance = current_ref + reward
+
+            # עדכון SLHA balance – משתמש חדש (אפשר לשנות ל־0 אם לא רוצים לתת לו)
+            current_new = getattr(new_user, "slha_balance", None)
+            if current_new is None:
+                new_user.slha_balance = reward
+            else:
+                new_user.slha_balance = current_new + reward
+
+            # לוג ב-Transaction (amount_slh=0 – זה לוג בלבד עבור SLHA)
+            tx = models.Transaction(
+                tx_type="referral_bonus_slha",
+                from_user=None,
+                to_user=referrer_tid,
+                amount_slh=Decimal("0"),
+            )
+            db.add(tx)
+            db.commit()
+            return reward
+        except Exception as e:
+            logger.exception("Error applying referral reward: %s", e)
+            db.rollback()
+            return Decimal("0")
+        finally:
+            db.close()
+
+    async def _log_referral_event(
+        self,
+        new_tg_user,
+        referrer_tid: int,
+        reward: Decimal,
+    ) -> None:
+        """
+        שולח הודעה לקבוצת REFERRAL_LOGS_CHAT_ID על רפררל חדש.
+        """
+        chat_id = settings.REFERRAL_LOGS_CHAT_ID
+        if not chat_id:
+            return
+        if not self.application or not self.application.bot:
+            return
+
+        try:
+            target_chat = int(chat_id)
+        except ValueError:
+            target_chat = chat_id
+
+        uname = (
+            f"@{new_tg_user.username}"
+            if getattr(new_tg_user, "username", None)
+            else "N/A"
+        )
+
+        lines: list[str] = []
+        lines.append("🎁 New referral registered")
+        lines.append(f"New user: {new_tg_user.id} ({uname})")
+        lines.append(f"Referrer: {referrer_tid}")
+        lines.append(f"Reward credited: {reward:.8f} SLHA (to referrer + new user)")
+
+        try:
+            await self.application.bot.send_message(
+                chat_id=target_chat,
+                text="\n".join(lines),
+            )
+        except Exception as e:
+            logger.warning("Failed to send referral log: %s", e)
+
     def _coming_soon_text(self, tg_user, context, module_key: str) -> str:
         """
         מחזיר טקסט 'בקרוב' רב־לשוני עבור מודול נתון.
@@ -411,7 +528,7 @@ class InvestorWalletBot:
     async def cmd_start(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
-        """חוויית הרשמה: מסך פתיחה + הסבר מה עושים עכשיו, עם i18n."""
+        """חוויית הרשמה: מסך פתיחה + הסבר מה עושים עכשיו, עם i18n + רפררל."""
         tg_user = update.effective_user
         lang = self._get_lang(tg_user, context)
 
@@ -421,6 +538,28 @@ class InvestorWalletBot:
         # לוג לקבוצת לוגים רק אם המשתמש חדש
         if is_new:
             await self._log_new_investor(tg_user, user)
+
+        # --- REFERRAL: /start ref_XXXX (פועל רק בהרשמה הראשונה) ---
+        if is_new and context.args:
+            raw_code = context.args[0]
+            if isinstance(raw_code, str) and raw_code.startswith("ref_"):
+                code_part = raw_code[4:]
+                try:
+                    referrer_tid = int(code_part)
+                except ValueError:
+                    referrer_tid = None
+
+                if referrer_tid and referrer_tid != tg_user.id:
+                    reward = self._apply_referral_reward(
+                        new_user_tid=tg_user.id,
+                        referrer_tid=referrer_tid,
+                    )
+                    if reward > 0:
+                        await self._log_referral_event(
+                            new_tg_user=tg_user,
+                            referrer_tid=referrer_tid,
+                            reward=reward,
+                        )
 
         min_invest = 100_000
         balance = user.balance_slh or Decimal("0")
@@ -806,7 +945,7 @@ class InvestorWalletBot:
             lines.append("")
             lines.append(
                 "Key commands: /menu, /wallet, /balance, /history, "
-                "/transfer, /docs, /help, /language"
+                "/transfer, /docs, /help, /language, /referrals"
             )
 
             await update.message.reply_text("\n".join(lines))
@@ -880,13 +1019,115 @@ class InvestorWalletBot:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
         """
-        תוכנית הפניות – placeholder.
-        בהמשך: לינק אישי, עמלות, עץ מרקל וכו'.
+        תוכנית הפניות – עכשיו LIVE:
+        - קישור אישי: https://t.me/<bot>?start=ref_<telegram_id>
+        - ספירת referrals
+        - הצגת יתרת SLHA
         """
-        tg_user = update.effective_user
-        _ = self._ensure_user(update)
-        text = self._coming_soon_text(tg_user, context, "MODULE_NAME_REFERRALS")
-        await update.message.reply_text(text)
+        db = self._db()
+        try:
+            tg_user = update.effective_user
+            user = crud.get_or_create_user(
+                db,
+                telegram_id=tg_user.id,
+                username=tg_user.username,
+            )
+
+            # קבלת username של הבוט לצורך קישור אישי
+            bot_username = None
+            try:
+                if self.bot and self.bot.username:
+                    bot_username = self.bot.username
+                else:
+                    me = await context.bot.get_me()
+                    bot_username = me.username
+            except Exception as e:
+                logger.warning("Failed to get bot username: %s", e)
+
+            if not bot_username:
+                link = "Unavailable – bot username not resolved yet."
+            else:
+                link = f"https://t.me/{bot_username}?start=ref_{tg_user.id}"
+
+            # סטטיסטיקות רפררלים – לפי Transactions מסוג referral_bonus_slha
+            txs = (
+                db.query(models.Transaction)
+                .filter(
+                    models.Transaction.to_user == tg_user.id,
+                    models.Transaction.tx_type == "referral_bonus_slha",
+                )
+                .all()
+            )
+
+            referrals_count = len(txs)
+            reward_per = self._referral_reward_amount()
+
+            # יתרת SLHA בפועל – מהטבלה
+            slha_balance = getattr(user, "slha_balance", None)
+            if slha_balance is None:
+                slha_balance = Decimal("0")
+
+            lang = self._get_lang(tg_user, context)
+
+            if lang == "he":
+                lines: list[str] = []
+                lines.append("תוכנית הפניות – SLH Global Investments")
+                lines.append("")
+                lines.append("זהו הקישור האישי שלך לשיתוף (חברים, משפחה, לקוחות):")
+                lines.append(link)
+                lines.append("")
+                lines.append(f"מספר מצטרפים שזוהו דרך הקישור שלך: {referrals_count}")
+                lines.append(
+                    f"יתרת SLHA פנימית (נקודות מערכת): {slha_balance:.8f} SLHA"
+                )
+                lines.append("")
+                lines.append(
+                    f"כרגע, כל מצטרף דרך הקישור מזכה ב-{reward_per:.8f} SLHA "
+                    f"(≈ 1 ₪ נומינלי) – מחולק גם למפנה וגם למצטרף."
+                )
+                lines.append("")
+                lines.append(
+                    "הנקודות הן Off-Chain וישמשו בהמשך לסטייקינג, הטבות, "
+                    "גישה למודולים מתקדמים ול-AI Trading Tutor."
+                )
+                lines.append("")
+                lines.append(
+                    "ככל שתשתף יותר ותבנה רשת משקיעים סביבך, כך תוכל/י לפתוח "
+                    "עוד שכבות באקו-סיסטם של SLH."
+                )
+            else:
+                lines = []
+                lines.append("Referral Program – SLH Global Investments")
+                lines.append("")
+                lines.append(
+                    "Your personal invite link (share with friends, family, clients):"
+                )
+                lines.append(link)
+                lines.append("")
+                lines.append(f"Referrals detected via your link: {referrals_count}")
+                lines.append(
+                    f"Current internal SLHA balance: {slha_balance:.8f} SLHA"
+                )
+                lines.append("")
+                lines.append(
+                    f"Each new investor via your link currently grants "
+                    f"{reward_per:.8f} SLHA (≈ 1 ILS nominal value), "
+                    "credited both to you and to the new investor."
+                )
+                lines.append("")
+                lines.append(
+                    "These points are off-chain and will be used later for staking tiers, "
+                    "bonuses and access to advanced AI trading modules."
+                )
+                lines.append("")
+                lines.append(
+                    "The more you share and onboard investors, the more you unlock inside "
+                    "the SLH ecosystem."
+                )
+
+            await update.message.reply_text("\n".join(lines))
+        finally:
+            db.close()
 
     async def cmd_reports(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
