@@ -802,10 +802,10 @@ class InvestorWalletBot:
         finally:
             db.close()
 
-    async def cmd_whoami(
+       async def cmd_whoami(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
-        """נותן חוויית "אני רשום במערכת"."""
+        """נותן חוויית "אני רשום במערכת" + מציג גם SLHA."""
         db = self._db()
         try:
             tg_user = update.effective_user
@@ -815,6 +815,11 @@ class InvestorWalletBot:
                 username=tg_user.username,
             )
             balance = user.balance_slh or Decimal("0")
+
+            # SLHA balance (internal points)
+            slha_balance = getattr(user, "slha_balance", None)
+            if slha_balance is None:
+                slha_balance = Decimal("0")
 
             lines: list[str] = []
             lines.append("Your SLH Investor Profile")
@@ -829,19 +834,30 @@ class InvestorWalletBot:
                 f"BNB address: {user.bnb_address or 'Not linked yet (use /link_wallet)'}"
             )
             lines.append(f"SLH balance: {balance:.4f} SLH")
+            lines.append(
+                f"Internal SLHA points: {slha_balance:.8f} SLHA"
+            )
             lines.append("")
             lines.append(
-                "Share your Telegram ID with the SLH team if needed for allocations."
+                "SLH = off-chain allocation units in the investor ledger."
+            )
+            lines.append(
+                "SLHA = internal reward points for referrals, activity and future modules."
+            )
+            lines.append("")
+            lines.append(
+                "You can see your referral link and stats via /referrals."
             )
 
             await update.message.reply_text("\n".join(lines))
         finally:
             db.close()
 
-    async def cmd_summary(
+
+       async def cmd_summary(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
-        """דשבורד משקיע במסך אחד."""
+        """דשבורד משקיע במסך אחד – כולל SLHA."""
         db = self._db()
         try:
             tg_user = update.effective_user
@@ -853,6 +869,11 @@ class InvestorWalletBot:
             balance = user.balance_slh or Decimal("0")
             price = self._slh_price_nis()
             value_nis = balance * price
+
+            # SLHA balance (internal reward points)
+            slha_balance = getattr(user, "slha_balance", None)
+            if slha_balance is None:
+                slha_balance = Decimal("0")
 
             addr = settings.COMMUNITY_WALLET_ADDRESS or ""
             token_addr = settings.SLH_TOKEN_ADDRESS or ""
@@ -896,10 +917,23 @@ class InvestorWalletBot:
             lines.append("Balance (Off-Chain System Ledger):")
             lines.append(f"- SLH: {balance:.4f} SLH")
             lines.append(
-                f"- Nominal ILS value: {value_nis:.2f} ILS"
+                f"- Nominal ILS value: {value_nis:.2f} ILS "
+                f"(at {price:.0f} ILS per SLH)"
             )
             lines.append(
-                f"- Hypothetical yearly yield (10%): {projected_yearly_yield:.4f} SLH"
+                f"- Hypothetical yearly yield (10%): "
+                f"{projected_yearly_yield:.4f} SLH"
+            )
+            lines.append(
+                f"- Internal SLHA points: {slha_balance:.8f} SLHA"
+            )
+            lines.append("")
+            lines.append(
+                "SLH = off-chain allocation units that mirror investor deposits."
+            )
+            lines.append(
+                "SLHA = internal reward points for referrals, activity and "
+                "future staking / AI modules."
             )
             lines.append("")
 
@@ -951,6 +985,7 @@ class InvestorWalletBot:
             await update.message.reply_text("\n".join(lines))
         finally:
             db.close()
+
 
     async def cmd_docs(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
