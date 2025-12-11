@@ -38,6 +38,29 @@ class InvestorWalletBot:
     def _is_admin(self, user_id: int) -> bool:
         return bool(settings.ADMIN_USER_ID) and str(user_id) == str(settings.ADMIN_USER_ID)
 
+
+    def _is_investor_approved(self, user: models.User) -> bool:
+        if not settings.INVESTOR_ONLY_MODE:
+            return True
+        status = (getattr(user, "investor_status", None) or "none").lower()
+        role = (getattr(user, "role", None) or "user").lower()
+        return status == "approved" or role == "investor"
+
+    async def _require_investor(self, update: Update, user: models.User) -> bool:
+        """Return True if allowed, otherwise reply with onboarding instructions."""
+        if self._is_investor_approved(user):
+            return True
+
+        text = (
+            "🔒 Investor-only area\n\n"
+            "To access investor features you must complete onboarding.\n"
+            "Use: /apply_investor\n\n"
+            "You can still link your wallet and submit deposits.\n"
+            "Commands: /link_wallet, /deposit, /mydeposits"
+        )
+        await update.message.reply_text(text)
+        return False
+
     def _get_lang(self, tg_user, context: ContextTypes.DEFAULT_TYPE | None = None) -> str:
         override = context.user_data.get("lang") if context else None
         if override:
@@ -55,6 +78,7 @@ class InvestorWalletBot:
 
         # user
         self.application.add_handler(CommandHandler("start", self.cmd_start))
+        self.application.add_handler(CommandHandler("apply_investor", self.cmd_apply_investor))
         self.application.add_handler(CommandHandler("menu", self.cmd_menu))
         self.application.add_handler(CommandHandler("help", self.cmd_help))
         self.application.add_handler(CommandHandler("whoami", self.cmd_whoami))
@@ -154,6 +178,54 @@ class InvestorWalletBot:
             await update.message.reply_text(text, reply_markup=self._menu_kb(is_investor))
         finally:
             db.close()
+
+    async def cmd_apply_investor(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """User requests investor onboarding."""
+        db = self._db()
+        try:
+            tg_user = update.effective_user
+            user = crud.get_or_create_user(db, tg_user.id, tg_user.username)
+            status = (user.investor_status or "none").lower()
+
+            if status == "approved":
+                await update.message.reply_text("✅ You are already approved as an investor.")
+                return
+            if status == "pending":
+                await update.message.reply_text("⏳ Your investor onboarding is already pending approval.")
+                return
+
+            user.investor_status = "pending"
+            db.add(user)
+            db.commit()
+
+            await update.message.reply_text(
+                "✅ Investor onboarding request submitted.\n"
+                "Our team will review and approve your access shortly."
+            )
+
+            # Notify admin logs
+            if settings.LOG_NEW_USERS_CHAT_ID and self.application and self.application.bot:
+                try:
+                    target = int(settings.LOG_NEW_USERS_CHAT_ID)
+                except Exception:
+                    target = settings.LOG_NEW_USERS_CHAT_ID
+                try:
+                    await self.application.bot.send_message(
+                        chat_id=target,
+                        text=(
+                            "📝 New investor onboarding request\n"
+                            f"Telegram ID: {tg_user.id}\n"
+                            f"Username: @{tg_user.username}" if tg_user.username else f"Telegram ID: {tg_user.id}\nUsername: N/A"
+                        ),
+                    )
+                except Exception:
+                    pass
+        finally:
+            db.close()
+
+
 
     async def cmd_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         db = self._db()

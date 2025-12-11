@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     # --- שפות ---
     DEFAULT_LANGUAGE: str = "en"
     SUPPORTED_LANGUAGES: str | None = None  # למשל: "en,he,ru,es"
+    # Investor gating (Layer 0)
+    INVESTOR_ONLY_MODE: bool = True  # if True: only approved investors can use investor-only flows
+    BSC_MIN_CONFIRMATIONS: int = 1  # confirmations required for deposit tx verification
 
     class Config:
         env_file = ".env"
