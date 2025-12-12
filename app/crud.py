@@ -122,9 +122,16 @@ def is_investor_active(db: Session, telegram_id: int) -> bool:
 def start_invest_onboarding(
     db: Session,
     telegram_id: int,
+    referrer_tid: int | None = None,  # ✅ תאימות לבוט
     note: str | None = None,
-    risk_ack: bool = True,   # ✅ תמיד נזין True כדי לא ליפול על NOT NULL
+    risk_ack: bool = True,            # ✅ כדי לא ליפול על NOT NULL
+    **_ignored,
 ) -> models.InvestorProfile:
+    """
+    Creates/updates an InvestorProfile with status=candidate.
+    We accept referrer_tid for compatibility (future use), even if not stored yet.
+    """
+
     prof = (
         db.query(models.InvestorProfile)
         .filter(models.InvestorProfile.telegram_id == telegram_id)
@@ -136,15 +143,20 @@ def start_invest_onboarding(
             prof.status = "candidate"
         if hasattr(prof, "note"):
             prof.note = note
-        # ✅ קריטי: risk_ack לא יכול להיות NULL
         if hasattr(prof, "risk_ack"):
             prof.risk_ack = bool(risk_ack)
+
+        # store referrer if model supports it
+        if referrer_tid is not None:
+            if hasattr(prof, "referrer_tid"):
+                prof.referrer_tid = referrer_tid
+            elif hasattr(prof, "referrer_telegram_id"):
+                prof.referrer_telegram_id = referrer_tid
 
         db.add(prof)
         db.commit()
         db.refresh(prof)
 
-        # ensure investor wallet exists
         get_or_create_wallet(
             db,
             telegram_id=telegram_id,
@@ -154,26 +166,29 @@ def start_invest_onboarding(
         )
         return prof
 
-    fields = {"telegram_id": telegram_id}
+    fields: dict = {"telegram_id": telegram_id}
 
     if hasattr(models.InvestorProfile, "status"):
         fields["status"] = "candidate"
     if hasattr(models.InvestorProfile, "note"):
         fields["note"] = note
-
-    # ✅ קריטי: אם השדה קיים - תמיד להכניס ערך (True/False), לא להשאיר NULL
     if hasattr(models.InvestorProfile, "risk_ack"):
         fields["risk_ack"] = bool(risk_ack)
-
     if hasattr(models.InvestorProfile, "created_at"):
         fields["created_at"] = datetime.utcnow()
+
+    # store referrer if model supports it
+    if referrer_tid is not None:
+        if hasattr(models.InvestorProfile, "referrer_tid"):
+            fields["referrer_tid"] = referrer_tid
+        elif hasattr(models.InvestorProfile, "referrer_telegram_id"):
+            fields["referrer_telegram_id"] = referrer_tid
 
     prof = models.InvestorProfile(**fields)
     db.add(prof)
     db.commit()
     db.refresh(prof)
 
-    # ensure investor wallet exists (deposits only)
     get_or_create_wallet(
         db,
         telegram_id=telegram_id,
@@ -184,7 +199,8 @@ def start_invest_onboarding(
     return prof
 
 
-def approve_investor(db: Session, telegram_id: int) -> models.InvestorProfile:
+def approve_investor(db: Session, admin_tid: int | None = None, telegram_id: int = 0, **_ignored) -> models.InvestorProfile:
+    # accept admin_tid for compatibility with other bot variants
     prof = (
         db.query(models.InvestorProfile)
         .filter(models.InvestorProfile.telegram_id == telegram_id)
@@ -197,22 +213,18 @@ def approve_investor(db: Session, telegram_id: int) -> models.InvestorProfile:
         prof.status = "active"
     if hasattr(prof, "risk_ack"):
         prof.risk_ack = True
+    if hasattr(prof, "approved_by") and admin_tid is not None:
+        prof.approved_by = admin_tid
+    if hasattr(prof, "approved_at"):
+        prof.approved_at = datetime.utcnow()
 
-    # also mark user if fields exist
     u = get_or_create_user(db, telegram_id, None)
     if hasattr(u, "role"):
         u.role = "investor"
     if hasattr(u, "investor_status"):
         u.investor_status = "approved"
 
-    # investor wallet: deposits yes, withdrawals still no
-    w = get_or_create_wallet(
-        db,
-        telegram_id,
-        "investor",
-        deposits_enabled=True,
-        withdrawals_enabled=False,
-    )
+    w = get_or_create_wallet(db, telegram_id, "investor", deposits_enabled=True, withdrawals_enabled=False)
 
     db.add(prof)
     db.add(u)
@@ -222,7 +234,7 @@ def approve_investor(db: Session, telegram_id: int) -> models.InvestorProfile:
     return prof
 
 
-def reject_investor(db: Session, telegram_id: int) -> models.InvestorProfile:
+def reject_investor(db: Session, admin_tid: int | None = None, telegram_id: int = 0, **_ignored) -> models.InvestorProfile:
     prof = (
         db.query(models.InvestorProfile)
         .filter(models.InvestorProfile.telegram_id == telegram_id)
@@ -235,6 +247,10 @@ def reject_investor(db: Session, telegram_id: int) -> models.InvestorProfile:
         prof.status = "rejected"
     if hasattr(prof, "risk_ack"):
         prof.risk_ack = True
+    if hasattr(prof, "rejected_by") and admin_tid is not None:
+        prof.rejected_by = admin_tid
+    if hasattr(prof, "rejected_at"):
+        prof.rejected_at = datetime.utcnow()
 
     db.add(prof)
     db.commit()
@@ -245,7 +261,6 @@ def reject_investor(db: Session, telegram_id: int) -> models.InvestorProfile:
 # ---------------- Referrals ----------------
 
 def count_referrals(db: Session, telegram_id: int) -> int:
-    # If you have a Referral model/table, use it. Otherwise return 0 safely.
     if hasattr(models, "Referral"):
         return db.query(models.Referral).filter(models.Referral.referrer_tid == telegram_id).count()
     if hasattr(models, "ReferralEvent"):
