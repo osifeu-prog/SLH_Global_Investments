@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
+from datetime import date
 
+import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import (
     Application,
@@ -38,7 +40,6 @@ class InvestorWalletBot:
     def _is_admin(self, user_id: int) -> bool:
         return bool(settings.ADMIN_USER_ID) and str(user_id) == str(settings.ADMIN_USER_ID)
 
-
     def _is_investor_approved(self, user: models.User) -> bool:
         if not settings.INVESTOR_ONLY_MODE:
             return True
@@ -58,7 +59,13 @@ class InvestorWalletBot:
             "You can still link your wallet and submit deposits.\n"
             "Commands: /link_wallet, /deposit, /mydeposits"
         )
-        await update.message.reply_text(text)
+        if update.message:
+            await update.message.reply_text(text)
+        else:
+            # fallback (callback context)
+            cq = update.callback_query
+            if cq and cq.message:
+                await cq.message.reply_text(text)
         return False
 
     def _get_lang(self, tg_user, context: ContextTypes.DEFAULT_TYPE | None = None) -> str:
@@ -67,6 +74,44 @@ class InvestorWalletBot:
             return i18n.normalize_lang(override)
         raw = getattr(tg_user, "language_code", None) or settings.DEFAULT_LANGUAGE
         return i18n.normalize_lang(raw)
+
+    # =========================
+    # Financial Gateway client
+    # =========================
+
+    def _gw_base(self) -> str:
+        base = (getattr(settings, "FIN_GATEWAY_URL", "") or "").strip().rstrip("/")
+        return base
+
+    def _gw_headers(self) -> dict:
+        token = (getattr(settings, "FIN_GATEWAY_TOKEN", "") or "").strip()
+        if token:
+            return {"Authorization": f"Bearer {token}"}
+        return {}
+
+    async def _gw_get(self, path: str, params: dict | None = None) -> dict:
+        base = self._gw_base()
+        if not base:
+            raise RuntimeError("FIN_GATEWAY_URL not set")
+        url = f"{base}{path}"
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(url, params=params or {}, headers=self._gw_headers())
+            r.raise_for_status()
+            return r.json()
+
+    async def _gw_post(self, path: str, payload: dict) -> dict:
+        base = self._gw_base()
+        if not base:
+            raise RuntimeError("FIN_GATEWAY_URL not set")
+        url = f"{base}{path}"
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(url, json=payload, headers=self._gw_headers())
+            r.raise_for_status()
+            return r.json()
+
+    # =========================
+    # Bot init
+    # =========================
 
     async def initialize(self):
         if not settings.BOT_TOKEN:
@@ -85,11 +130,17 @@ class InvestorWalletBot:
         self.application.add_handler(CommandHandler("referrals", self.cmd_referrals))
         self.application.add_handler(CommandHandler("link_wallet", self.cmd_link_wallet))
 
-        # investor flow
+        # investor flow (existing)
         self.application.add_handler(CommandHandler("invest", self.cmd_invest))
         self.application.add_handler(CommandHandler("deposit", self.cmd_deposit))
         self.application.add_handler(CommandHandler("balance", self.cmd_balance))
         self.application.add_handler(CommandHandler("history", self.cmd_history))
+
+        # ILS / Financial Gateway (new)
+        self.application.add_handler(CommandHandler("status_ils", self.cmd_status_ils))
+        self.application.add_handler(CommandHandler("history_ils", self.cmd_history_ils))
+        self.application.add_handler(CommandHandler("choose", self.cmd_choose))
+        self.application.add_handler(CallbackQueryHandler(self.cb_choose, pattern=r"^CH_"))
 
         # admin
         self.application.add_handler(CommandHandler("admin_list_candidates", self.cmd_admin_list_candidates))
@@ -135,6 +186,16 @@ class InvestorWalletBot:
                 ]
             )
             rows.append([InlineKeyboardButton("🧾 History", callback_data="M_HIST")])
+
+            # new: ILS quick actions (optional UI)
+            rows.append(
+                [
+                    InlineKeyboardButton("₪ Status", callback_data="M_ILS_STATUS"),
+                    InlineKeyboardButton("₪ Choose", callback_data="M_ILS_CHOOSE"),
+                ]
+            )
+            rows.append([InlineKeyboardButton("₪ History", callback_data="M_ILS_HIST")])
+
         return InlineKeyboardMarkup(rows)
 
     async def _ensure_user(self, update: Update) -> models.User:
@@ -179,9 +240,7 @@ class InvestorWalletBot:
         finally:
             db.close()
 
-    async def cmd_apply_investor(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ):
+    async def cmd_apply_investor(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """User requests investor onboarding."""
         db = self._db()
         try:
@@ -217,15 +276,15 @@ class InvestorWalletBot:
                         text=(
                             "📝 New investor onboarding request\n"
                             f"Telegram ID: {tg_user.id}\n"
-                            f"Username: @{tg_user.username}" if tg_user.username else f"Telegram ID: {tg_user.id}\nUsername: N/A"
+                            f"Username: @{tg_user.username}"
+                            if tg_user.username
+                            else f"Telegram ID: {tg_user.id}\nUsername: N/A"
                         ),
                     )
                 except Exception:
                     pass
         finally:
             db.close()
-
-
 
     async def cmd_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         db = self._db()
@@ -242,7 +301,13 @@ class InvestorWalletBot:
             "/start /menu\n"
             "/referrals\n"
             "/invest (פתיחת אונבורדינג השקעה)\n"
-            "/deposit (דיווח הפקדה)\n\n"
+            "/deposit (דיווח הפקדה)\n"
+            "/balance\n"
+            "/history\n\n"
+            "₪ / Financial Gateway:\n"
+            "/status_ils\n"
+            "/history_ils\n"
+            "/choose\n\n"
             "אדמין:\n"
             "/admin_list_candidates\n"
             "/admin_approve_investor <telegram_id>\n"
@@ -348,7 +413,7 @@ class InvestorWalletBot:
                 await update.message.reply_text("✅ אתה כבר משקיע מאושר. השתמש /deposit או /balance.")
                 return
 
-            # נרשום candidate + risk_ack=true (פשוט ומהיר; אפשר להפוך לשאלון בהמשך)
+            # נרשום candidate + risk_ack=true
             prof = crud.start_invest_onboarding(
                 db=db,
                 telegram_id=tg.id,
@@ -430,6 +495,101 @@ class InvestorWalletBot:
             await update.message.reply_text("\n".join(lines))
         finally:
             db.close()
+
+    # =========================
+    # NEW: ILS commands (Gateway)
+    # =========================
+
+    async def cmd_status_ils(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        tg = update.effective_user
+
+        # ensure local user exists (keeps your current DB logic intact)
+        db = self._db()
+        try:
+            user = crud.get_or_create_user(db, tg.id, tg.username)
+            # Optional: if you want investor gating
+            # if not await self._require_investor(update, user):
+            #     return
+        finally:
+            db.close()
+
+        try:
+            data = await self._gw_get("/investor/status", params={"user_id": tg.id})
+            cap = float(data.get("capital_ils", 0) or 0)
+            last = float(data.get("last_month_yield_ils", 0) or 0)
+            alpha = data.get("last_month_alpha", None)
+            choice = str(data.get("current_choice", "REINVEST") or "REINVEST").upper()
+
+            alpha_txt = f"{alpha}" if alpha is not None else "N/A"
+            choice_txt = "🔁 צבירה" if choice == "REINVEST" else "💸 קבלה"
+
+            msg = (
+                "💼 מצב השקעה (₪)\n\n"
+                f"קרן נוכחית: ₪{cap:,.2f}\n"
+                f"תשואת חודש אחרון: ₪{last:,.2f}\n"
+                f"α (נזילות): {alpha_txt}\n"
+                f"בחירה לחודש נוכחי: {choice_txt}\n\n"
+                "לשינוי בחירה: /choose\n"
+                "להיסטוריה: /history_ils"
+            )
+            await update.message.reply_text(msg)
+        except Exception as e:
+            await update.message.reply_text(
+                "❌ לא הצלחתי לקרוא נתונים מהשער הפיננסי.\n"
+                "בדוק ש-FIN_GATEWAY_URL מוגדר ושיש endpoints זמינים."
+            )
+            logger.exception("cmd_status_ils failed: %s", e)
+
+    async def cmd_choose(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💸 קבל החודש", callback_data="CH_PAYOUT")],
+            [InlineKeyboardButton("🔁 צבור לקרן", callback_data="CH_REINVEST")],
+        ])
+        await update.message.reply_text("בחר פעולה לחודש הנוכחי:", reply_markup=kb)
+
+    async def cb_choose(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query
+        await q.answer()
+        tg = update.effective_user
+
+        action = (q.data or "").replace("CH_", "").strip().upper()
+        choice = "PAYOUT" if action == "PAYOUT" else "REINVEST"
+        month = date.today().replace(day=1).isoformat()
+
+        try:
+            await self._gw_post("/investor/choice", {
+                "user_id": tg.id,
+                "month": month,
+                "choice": choice
+            })
+            txt = "✅ עודכן: 💸 קבלה" if choice == "PAYOUT" else "✅ עודכן: 🔁 צבירה"
+            if q.message:
+                await q.message.reply_text(txt)
+        except Exception as e:
+            if q.message:
+                await q.message.reply_text("❌ לא הצלחתי לעדכן בחירה בשער הפיננסי.")
+            logger.exception("cb_choose failed: %s", e)
+
+    async def cmd_history_ils(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        tg = update.effective_user
+        try:
+            data = await self._gw_get("/investor/history", params={"user_id": tg.id, "limit": 20})
+            items = data.get("items", []) or []
+            if not items:
+                await update.message.reply_text("אין היסטוריה (₪) עדיין.")
+                return
+
+            lines = ["🧾 היסטוריה (₪) — 20 אחרונים:", ""]
+            for it in items:
+                d = it.get("date", "")
+                t = it.get("type", "")
+                a = float(it.get("amount_ils", 0) or 0)
+                s = it.get("source", "")
+                lines.append(f"[{d}] {t} ₪{a:,.2f} ({s})")
+            await update.message.reply_text("\n".join(lines))
+        except Exception as e:
+            await update.message.reply_text("❌ לא הצלחתי לקרוא היסטוריה מהשער הפיננסי.")
+            logger.exception("cmd_history_ils failed: %s", e)
 
     # ===== Admin =====
 
@@ -536,6 +696,25 @@ class InvestorWalletBot:
                 f"user={dep.telegram_id}\n"
                 f"credited={credit_slh} SLH"
             )
+
+            # NEW: also report DEPOSIT to Financial Gateway in ₪ (only if amount is already ₪)
+            # If dep.amount is TON/USDT, DO NOT send as ₪. Add conversion layer later.
+            try:
+                # If your dep.currency is 'ILS' or 'NIS' -> safe as ₪
+                cur = str(getattr(dep, "currency", "") or "").upper()
+                if cur in ("ILS", "NIS", "₪"):
+                    amount_ils = Decimal(str(dep.amount))
+                    await self._gw_post("/ledger/event", {
+                        "type": "DEPOSIT",
+                        "user_id": int(dep.telegram_id),
+                        "amount_ils": float(amount_ils),
+                        "source": "admin_confirm_deposit",
+                        "ref": f"deposit_id={dep.id}"
+                    })
+            except Exception:
+                # don't fail admin flow if gateway is down
+                pass
+
         except Exception as e:
             await update.message.reply_text(f"❌ Failed: {e}")
         finally:
@@ -564,6 +743,14 @@ class InvestorWalletBot:
             await self.cmd_deposit(fake_update, context)
         elif data == "M_HIST":
             await self.cmd_history(fake_update, context)
+
+        # new menu actions:
+        elif data == "M_ILS_STATUS":
+            await self.cmd_status_ils(fake_update, context)
+        elif data == "M_ILS_CHOOSE":
+            await self.cmd_choose(fake_update, context)
+        elif data == "M_ILS_HIST":
+            await self.cmd_history_ils(fake_update, context)
 
     # ===== Text =====
 
