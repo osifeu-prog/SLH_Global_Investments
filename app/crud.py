@@ -3,36 +3,34 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Optional
 
 from sqlalchemy.orm import Session
 
 from app import models
 
 
-# ---------------- Users ----------------
+# ========= Users =========
 
-def get_or_create_user(db: Session, telegram_id: int, username: str | None = None) -> models.User:
+def get_or_create_user(
+    db: Session,
+    telegram_id: int,
+    username: Optional[str] = None,
+) -> models.User:
     user = db.query(models.User).filter(models.User.telegram_id == telegram_id).first()
     if user:
-        if username is not None and hasattr(user, "username") and user.username != username:
+        if username is not None and user.username != username:
             user.username = username
             db.add(user)
             db.commit()
         return user
 
-    kwargs = {"telegram_id": telegram_id}
-    if hasattr(models.User, "username"):
-        kwargs["username"] = username
-    if hasattr(models.User, "role"):
-        kwargs["role"] = "user"
-    if hasattr(models.User, "investor_status"):
-        kwargs["investor_status"] = "none"
-    if hasattr(models.User, "balance_slh"):
-        kwargs["balance_slh"] = Decimal("0")
-    if hasattr(models.User, "slha_balance"):
-        kwargs["slha_balance"] = Decimal("0")
-
-    user = models.User(**kwargs)
+    user = models.User(
+        telegram_id=telegram_id,
+        username=username,
+        balance_slh=Decimal("0"),
+        slha_balance=Decimal("0"),
+    )
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -40,23 +38,14 @@ def get_or_create_user(db: Session, telegram_id: int, username: str | None = Non
 
 
 def set_bnb_address(db: Session, user: models.User, addr: str) -> models.User:
-    if hasattr(user, "bnb_address"):
-        user.bnb_address = addr
+    user.bnb_address = addr
     db.add(user)
     db.commit()
     db.refresh(user)
     return user
 
 
-# ---------------- Wallets ----------------
-
-def get_wallet(db: Session, telegram_id: int, kind: str) -> models.Wallet | None:
-    return (
-        db.query(models.Wallet)
-        .filter(models.Wallet.telegram_id == telegram_id, models.Wallet.kind == kind)
-        .first()
-    )
-
+# ========= Wallets =========
 
 def get_or_create_wallet(
     db: Session,
@@ -65,73 +54,59 @@ def get_or_create_wallet(
     deposits_enabled: bool = True,
     withdrawals_enabled: bool = False,
 ) -> models.Wallet:
-    w = get_wallet(db, telegram_id, kind)
-    if w:
-        if hasattr(w, "deposits_enabled"):
-            w.deposits_enabled = deposits_enabled
-        if hasattr(w, "withdrawals_enabled"):
-            w.withdrawals_enabled = withdrawals_enabled
-        if hasattr(w, "is_active"):
-            w.is_active = True
-        db.add(w)
+    wallet = (
+        db.query(models.Wallet)
+        .filter(
+            models.Wallet.telegram_id == telegram_id,
+            models.Wallet.kind == kind,
+        )
+        .first()
+    )
+    if wallet:
+        wallet.deposits_enabled = deposits_enabled
+        wallet.withdrawals_enabled = withdrawals_enabled
+        db.add(wallet)
         db.commit()
-        db.refresh(w)
-        return w
+        return wallet
 
-    kwargs = {"telegram_id": telegram_id, "kind": kind}
-    if hasattr(models.Wallet, "deposits_enabled"):
-        kwargs["deposits_enabled"] = deposits_enabled
-    if hasattr(models.Wallet, "withdrawals_enabled"):
-        kwargs["withdrawals_enabled"] = withdrawals_enabled
-    if hasattr(models.Wallet, "is_active"):
-        kwargs["is_active"] = True
-    if hasattr(models.Wallet, "balance_slh"):
-        kwargs["balance_slh"] = Decimal("0")
-
-    w = models.Wallet(**kwargs)
-    db.add(w)
+    wallet = models.Wallet(
+        telegram_id=telegram_id,
+        kind=kind,
+        deposits_enabled=deposits_enabled,
+        withdrawals_enabled=withdrawals_enabled,
+        balance_slh=Decimal("0"),
+    )
+    db.add(wallet)
     db.commit()
-    db.refresh(w)
-    return w
+    db.refresh(wallet)
+    return wallet
 
 
-# ---------------- Investors ----------------
+# ========= Investor status =========
 
 def is_investor_active(db: Session, telegram_id: int) -> bool:
-    # Prefer InvestorProfile if exists
-    try:
-        prof = (
-            db.query(models.InvestorProfile)
-            .filter(models.InvestorProfile.telegram_id == telegram_id)
-            .first()
-        )
-        if prof and getattr(prof, "status", None):
-            return str(prof.status).lower() in ("active", "approved")
-    except Exception:
-        pass
-
-    # Fallback: user role/status
-    u = db.query(models.User).filter(models.User.telegram_id == telegram_id).first()
-    if not u:
+    prof = (
+        db.query(models.InvestorProfile)
+        .filter(models.InvestorProfile.telegram_id == telegram_id)
+        .first()
+    )
+    if not prof:
         return False
-    role = str(getattr(u, "role", "") or "").lower()
-    inv_status = str(getattr(u, "investor_status", "") or "").lower()
-    return role == "investor" or inv_status in ("approved", "active")
+    return str(prof.status).lower() == "active"
 
 
 def start_invest_onboarding(
     db: Session,
     telegram_id: int,
-    referrer_tid: int | None = None,  # ✅ תאימות לבוט
-    note: str | None = None,
-    risk_ack: bool = True,            # ✅ כדי לא ליפול על NOT NULL
-    **_ignored,
+    note: Optional[str] = None,
+    risk_ack: bool = False,
 ) -> models.InvestorProfile:
     """
-    Creates/updates an InvestorProfile with status=candidate.
-    We accept referrer_tid for compatibility (future use), even if not stored yet.
+    פותח בקשת השקעה בצורה בטוחה:
+    - תמיד מספק risk_ack (חובה ב-DB)
+    - יוצר/מעדכן InvestorProfile
+    - יוצר ארנק investor (הפקדות בלבד)
     """
-
     prof = (
         db.query(models.InvestorProfile)
         .filter(models.InvestorProfile.telegram_id == telegram_id)
@@ -139,56 +114,26 @@ def start_invest_onboarding(
     )
 
     if prof:
-        if hasattr(prof, "status"):
-            prof.status = "candidate"
-        if hasattr(prof, "note"):
+        prof.status = "candidate"
+        prof.risk_ack = bool(risk_ack)
+        if note:
             prof.note = note
-        if hasattr(prof, "risk_ack"):
-            prof.risk_ack = bool(risk_ack)
-
-        # store referrer if model supports it
-        if referrer_tid is not None:
-            if hasattr(prof, "referrer_tid"):
-                prof.referrer_tid = referrer_tid
-            elif hasattr(prof, "referrer_telegram_id"):
-                prof.referrer_telegram_id = referrer_tid
-
+        db.add(prof)
+        db.commit()
+        db.refresh(prof)
+    else:
+        prof = models.InvestorProfile(
+            telegram_id=telegram_id,
+            status="candidate",
+            risk_ack=bool(risk_ack),
+            note=note,
+            created_at=datetime.utcnow(),
+        )
         db.add(prof)
         db.commit()
         db.refresh(prof)
 
-        get_or_create_wallet(
-            db,
-            telegram_id=telegram_id,
-            kind="investor",
-            deposits_enabled=True,
-            withdrawals_enabled=False,
-        )
-        return prof
-
-    fields: dict = {"telegram_id": telegram_id}
-
-    if hasattr(models.InvestorProfile, "status"):
-        fields["status"] = "candidate"
-    if hasattr(models.InvestorProfile, "note"):
-        fields["note"] = note
-    if hasattr(models.InvestorProfile, "risk_ack"):
-        fields["risk_ack"] = bool(risk_ack)
-    if hasattr(models.InvestorProfile, "created_at"):
-        fields["created_at"] = datetime.utcnow()
-
-    # store referrer if model supports it
-    if referrer_tid is not None:
-        if hasattr(models.InvestorProfile, "referrer_tid"):
-            fields["referrer_tid"] = referrer_tid
-        elif hasattr(models.InvestorProfile, "referrer_telegram_id"):
-            fields["referrer_telegram_id"] = referrer_tid
-
-    prof = models.InvestorProfile(**fields)
-    db.add(prof)
-    db.commit()
-    db.refresh(prof)
-
+    # ודא ארנק משקיע
     get_or_create_wallet(
         db,
         telegram_id=telegram_id,
@@ -196,73 +141,116 @@ def start_invest_onboarding(
         deposits_enabled=True,
         withdrawals_enabled=False,
     )
+
     return prof
 
 
-def approve_investor(db: Session, admin_tid: int | None = None, telegram_id: int = 0, **_ignored) -> models.InvestorProfile:
-    # accept admin_tid for compatibility with other bot variants
+def approve_investor(db: Session, telegram_id: int) -> models.InvestorProfile:
     prof = (
         db.query(models.InvestorProfile)
         .filter(models.InvestorProfile.telegram_id == telegram_id)
         .first()
     )
     if not prof:
-        prof = start_invest_onboarding(db, telegram_id, note="Auto-created on approve", risk_ack=True)
+        prof = start_invest_onboarding(
+            db,
+            telegram_id=telegram_id,
+            note="Auto-created on approve",
+            risk_ack=True,
+        )
 
-    if hasattr(prof, "status"):
-        prof.status = "active"
-    if hasattr(prof, "risk_ack"):
-        prof.risk_ack = True
-    if hasattr(prof, "approved_by") and admin_tid is not None:
-        prof.approved_by = admin_tid
-    if hasattr(prof, "approved_at"):
-        prof.approved_at = datetime.utcnow()
-
-    u = get_or_create_user(db, telegram_id, None)
-    if hasattr(u, "role"):
-        u.role = "investor"
-    if hasattr(u, "investor_status"):
-        u.investor_status = "approved"
-
-    w = get_or_create_wallet(db, telegram_id, "investor", deposits_enabled=True, withdrawals_enabled=False)
-
+    prof.status = "active"
     db.add(prof)
-    db.add(u)
-    db.add(w)
+
+    # ארנק משקיע נשאר הפקדות בלבד (משיכות לפי מדיניות עתידית)
+    get_or_create_wallet(
+        db,
+        telegram_id=telegram_id,
+        kind="investor",
+        deposits_enabled=True,
+        withdrawals_enabled=False,
+    )
+
     db.commit()
     db.refresh(prof)
     return prof
 
 
-def reject_investor(db: Session, admin_tid: int | None = None, telegram_id: int = 0, **_ignored) -> models.InvestorProfile:
+def reject_investor(db: Session, telegram_id: int) -> models.InvestorProfile:
     prof = (
         db.query(models.InvestorProfile)
         .filter(models.InvestorProfile.telegram_id == telegram_id)
         .first()
     )
     if not prof:
-        prof = start_invest_onboarding(db, telegram_id, note="Auto-created on reject", risk_ack=True)
+        prof = start_invest_onboarding(
+            db,
+            telegram_id=telegram_id,
+            note="Auto-created on reject",
+            risk_ack=False,
+        )
 
-    if hasattr(prof, "status"):
-        prof.status = "rejected"
-    if hasattr(prof, "risk_ack"):
-        prof.risk_ack = True
-    if hasattr(prof, "rejected_by") and admin_tid is not None:
-        prof.rejected_by = admin_tid
-    if hasattr(prof, "rejected_at"):
-        prof.rejected_at = datetime.utcnow()
-
+    prof.status = "rejected"
     db.add(prof)
     db.commit()
     db.refresh(prof)
     return prof
 
 
-# ---------------- Referrals ----------------
+# ========= Referrals =========
 
 def count_referrals(db: Session, telegram_id: int) -> int:
-    if hasattr(models, "Referral"):
-        return db.query(models.Referral).filter(models.Referral.referrer_tid == telegram_id).count()
-    if hasattr(models, "ReferralEvent"):
-        return db.query(models.ReferralEvent).filter(models.ReferralEvent.referrer_tid == telegram_id).count()
-    return 0
+    return (
+        db.query(models.Referral)
+        .filter(models.Referral.referrer_tid == telegram_id)
+        .count()
+    )
+
+
+def add_referral(
+    db: Session,
+    referrer_tid: int,
+    referred_tid: int,
+) -> bool:
+    """
+    מחזיר True אם נוצר רפרל חדש, False אם כבר קיים
+    """
+    if referrer_tid == referred_tid:
+        return False
+
+    exists = (
+        db.query(models.Referral)
+        .filter(models.Referral.referred_tid == referred_tid)
+        .first()
+    )
+    if exists:
+        return False
+
+    ref = models.Referral(
+        referrer_tid=referrer_tid,
+        referred_tid=referred_tid,
+    )
+    db.add(ref)
+    db.commit()
+    return True
+
+
+# ========= Transactions (בסיס) =========
+
+def add_transaction(
+    db: Session,
+    from_user: Optional[int],
+    to_user: Optional[int],
+    amount_slh: Decimal,
+    tx_type: str,
+) -> models.Transaction:
+    tx = models.Transaction(
+        from_user=from_user,
+        to_user=to_user,
+        amount_slh=amount_slh,
+        tx_type=tx_type,
+    )
+    db.add(tx)
+    db.commit()
+    db.refresh(tx)
+    return tx
