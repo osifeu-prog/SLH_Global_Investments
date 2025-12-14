@@ -19,6 +19,7 @@ from app.core.config import settings
 from app.database import SessionLocal
 from app import models
 from app import crud
+from app import ledger
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +146,6 @@ class InvestorWalletBot:
         )
 
     def _ensure_investor_wallet_if_needed(self, db, telegram_id: int):
-        # only if they started onboarding (or active)
         prof = crud.get_investor_profile(db, telegram_id)
         if prof and str(prof.status).lower() in ("candidate", "active", "approved"):
             crud.get_or_create_wallet(
@@ -296,7 +296,6 @@ class InvestorWalletBot:
                 await update.message.reply_text("✅ כבר יש לך סטטוס משקיע פעיל.")
                 return
 
-            # if came through referral - attach
             ref = (
                 db.query(models.Referral)
                 .filter(models.Referral.referred_tid == tg.id)
@@ -328,16 +327,13 @@ class InvestorWalletBot:
         addr = settings.USDT_TON_TREASURY_ADDRESS if asset == "USDT_TON" else settings.TON_TREASURY_ADDRESS
         addr = addr or settings.TON_TREASURY_ADDRESS or "MISSING_TREASURY_ADDRESS"
 
-        # deposit target wallet_type
-        wallet_type = "investor" if crud.is_investor_active(self._db(), tg.id) else "investor"
-
         txt = (
             "💰 הפקדה\n\n"
             f"שלח {('USDT (על TON)' if asset == 'USDT_TON' else 'TON')} לכתובת הבאה:\n"
             f"{addr}\n\n"
             f"חשוב: הוסף Memo/Comment (הערה) = {tg.id}\n"
             "ככה נוכל להצמיד הפקדה למשתמש בצורה חד-משמעית.\n\n"
-            f"ארנק יעד במערכת: {wallet_type}\n"
+            "ארנק יעד במערכת: investor\n"
         )
         await update.message.reply_text(txt)
 
@@ -345,10 +341,8 @@ class InvestorWalletBot:
         tg = update.effective_user
         db = self._db()
         try:
-            # show internal balances from ledger (ILS/USDT_TON/Ton etc)
-            # We’ll start with USDT_TON as accounting anchor.
-            usdt = crud.get_ledger_balance(db, telegram_id=tg.id, wallet_type="investor", currency="USDT_TON")
-            ton = crud.get_ledger_balance(db, telegram_id=tg.id, wallet_type="investor", currency="TON")
+            usdt = ledger.get_balance(db, telegram_id=tg.id, wallet_type="investor", currency="USDT_TON")
+            ton = ledger.get_balance(db, telegram_id=tg.id, wallet_type="investor", currency="TON")
 
             apr = settings.DEFAULT_APR or "0.18"
             txt = (
@@ -365,7 +359,7 @@ class InvestorWalletBot:
         tg = update.effective_user
         db = self._db()
         try:
-            rows = crud.list_ledger_entries(db, telegram_id=tg.id, wallet_type="investor", limit=15)
+            rows = ledger.get_statement(db, telegram_id=tg.id, wallet_type="investor", limit=15)
             if not rows:
                 await update.message.reply_text("🧾 אין תנועות עדיין.")
                 return
@@ -385,7 +379,7 @@ class InvestorWalletBot:
             return
         await update.message.reply_text("🛠 פאנל אדמין:", reply_markup=self._admin_markup())
 
-    # -------- Callback menu (NO fake updates) --------
+    # -------- Callback menu --------
 
     async def cb_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         q = update.callback_query
@@ -393,7 +387,6 @@ class InvestorWalletBot:
         data = q.data or ""
         tg = update.effective_user
 
-        # route to "message-based" helpers
         if data == "MENU:WHOAMI":
             await self._whoami_to_message(q.message, tg.id, tg.username)
             return
@@ -525,8 +518,8 @@ class InvestorWalletBot:
     async def _balance_to_message(self, message, telegram_id: int):
         db = self._db()
         try:
-            usdt = crud.get_ledger_balance(db, telegram_id=telegram_id, wallet_type="investor", currency="USDT_TON")
-            ton = crud.get_ledger_balance(db, telegram_id=telegram_id, wallet_type="investor", currency="TON")
+            usdt = ledger.get_balance(db, telegram_id=telegram_id, wallet_type="investor", currency="USDT_TON")
+            ton = ledger.get_balance(db, telegram_id=telegram_id, wallet_type="investor", currency="TON")
             txt = (
                 "📊 יתרה (לפי Ledger פנימי)\n\n"
                 f"USDT_TON: {usdt:,.6f}\n"
@@ -539,7 +532,7 @@ class InvestorWalletBot:
     async def _statement_to_message(self, message, telegram_id: int):
         db = self._db()
         try:
-            rows = crud.list_ledger_entries(db, telegram_id=telegram_id, wallet_type="investor", limit=15)
+            rows = ledger.get_statement(db, telegram_id=telegram_id, wallet_type="investor", limit=15)
             if not rows:
                 await message.reply_text("🧾 אין תנועות עדיין.")
                 return
