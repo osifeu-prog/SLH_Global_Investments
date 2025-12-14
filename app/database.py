@@ -2,13 +2,11 @@
 from __future__ import annotations
 
 import logging
-from urllib.parse import urlparse
-
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
-from app.models import Base
+from app.models import Base  # Base מיובא מ-models
 
 logger = logging.getLogger(__name__)
 
@@ -26,28 +24,96 @@ SessionLocal = sessionmaker(
 )
 
 
-def _log_db_target():
-    try:
-        u = urlparse(settings.DATABASE_URL)
-        # לא מדפיסים סיסמה
-        logger.info("DB target: scheme=%s host=%s port=%s db=%s", u.scheme, u.hostname, u.port, (u.path or "").lstrip("/"))
-    except Exception:
-        logger.info("DB target: <parse failed>")
-
-
-def _ensure_extras():
+def _ensure_schema():
     """
-    דברים "אקסטרה" שאינם תלויים במודלים (או שתרצה להבטיח גם אם מישהו מחק בטעות).
-    ב-DB חדש: create_all ייצור את הטבלאות מהמודלים.
+    Bootstrap + soft-migration:
+    1) יוצר טבלאות בסיסיות אם DB חדש וריק (CREATE TABLE IF NOT EXISTS)
+    2) מוסיף עמודות/אינדקסים אם חסרים (ALTER/CREATE INDEX IF NOT EXISTS)
     """
+
     statements: list[str] = [
-        # ledger_entries: אם תרצה להשאיר אותו מנוהל במודלים בלבד — אפשר למחוק את הבלוק הזה.
+        # -------------------------
+        # BOOTSTRAP TABLES (DB ריק)
+        # -------------------------
+        """
+        CREATE TABLE IF NOT EXISTS users (
+          telegram_id BIGINT PRIMARY KEY,
+          username VARCHAR(255),
+          bnb_address VARCHAR(255),
+          balance_slh NUMERIC(24,6) NOT NULL DEFAULT 0,
+          slha_balance NUMERIC(24,8) NOT NULL DEFAULT 0,
+          role VARCHAR(64) NOT NULL DEFAULT 'user',
+          investor_status VARCHAR(64) NOT NULL DEFAULT 'none',
+          created_at TIMESTAMPTZ DEFAULT now(),
+          updated_at TIMESTAMPTZ DEFAULT now()
+        );
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_users_telegram_id ON users(telegram_id);",
+        "CREATE INDEX IF NOT EXISTS ix_users_username ON users(username);",
+
+        """
+        CREATE TABLE IF NOT EXISTS investor_profiles (
+          telegram_id BIGINT PRIMARY KEY,
+          status VARCHAR(32) NOT NULL DEFAULT 'candidate',
+          risk_ack BOOLEAN NOT NULL DEFAULT false,
+          referrer_tid BIGINT,
+          approved_at TIMESTAMPTZ,
+          note TEXT,
+          created_at TIMESTAMPTZ DEFAULT now(),
+          updated_at TIMESTAMPTZ DEFAULT now()
+        );
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_investor_profiles_status ON investor_profiles(status);",
+        "CREATE INDEX IF NOT EXISTS ix_investor_profiles_telegram_id ON investor_profiles(telegram_id);",
+
+        """
+        CREATE TABLE IF NOT EXISTS wallets (
+          id SERIAL PRIMARY KEY,
+          telegram_id BIGINT NOT NULL,
+          wallet_type VARCHAR(16) NOT NULL DEFAULT 'base',
+          is_active BOOLEAN NOT NULL DEFAULT true,
+          balance_slh NUMERIC(24,6) NOT NULL DEFAULT 0,
+          balance_slha NUMERIC(24,8) NOT NULL DEFAULT 0,
+          kind VARCHAR(50) NOT NULL DEFAULT 'base',
+          deposits_enabled BOOLEAN NOT NULL DEFAULT true,
+          withdrawals_enabled BOOLEAN NOT NULL DEFAULT false,
+          created_at TIMESTAMPTZ DEFAULT now(),
+          updated_at TIMESTAMPTZ DEFAULT now()
+        );
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_wallets_id ON wallets(id);",
+        "CREATE INDEX IF NOT EXISTS ix_wallets_telegram_id ON wallets(telegram_id);",
+        "CREATE INDEX IF NOT EXISTS ix_wallets_wallet_type ON wallets(wallet_type);",
+
+        """
+        CREATE TABLE IF NOT EXISTS referrals (
+          id SERIAL PRIMARY KEY,
+          referrer_tid BIGINT NOT NULL,
+          referred_tid BIGINT NOT NULL,
+          created_at TIMESTAMPTZ DEFAULT now()
+        );
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_referrals_referrer_tid ON referrals(referrer_tid);",
+        "CREATE INDEX IF NOT EXISTS ix_referrals_referred_tid ON referrals(referred_tid);",
+
+        """
+        CREATE TABLE IF NOT EXISTS transactions (
+          id SERIAL PRIMARY KEY,
+          created_at TIMESTAMPTZ DEFAULT now(),
+          from_user BIGINT,
+          to_user BIGINT,
+          amount_slh NUMERIC(24,6) NOT NULL,
+          tx_type VARCHAR(50) NOT NULL
+        );
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_transactions_id ON transactions(id);",
+
         """
         CREATE TABLE IF NOT EXISTS ledger_entries (
           id SERIAL PRIMARY KEY,
           telegram_id BIGINT NOT NULL,
           wallet_type VARCHAR(16) NOT NULL DEFAULT 'base',
-          direction VARCHAR(16) NOT NULL,
+          direction VARCHAR(16) NOT NULL, -- in/out
           amount NUMERIC(24,8) NOT NULL,
           currency VARCHAR(16) NOT NULL DEFAULT 'ILS',
           reason VARCHAR(64) NOT NULL DEFAULT 'manual',
@@ -57,6 +123,33 @@ def _ensure_extras():
         """,
         "CREATE INDEX IF NOT EXISTS ix_ledger_entries_tid ON ledger_entries(telegram_id);",
         "CREATE INDEX IF NOT EXISTS ix_ledger_entries_wallet_type ON ledger_entries(wallet_type);",
+
+        # -------------------------
+        # SOFT-MIGRATIONS (עמודות)
+        # -------------------------
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS slha_balance NUMERIC(24, 8) NOT NULL DEFAULT 0;",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(64) NOT NULL DEFAULT 'user';",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS investor_status VARCHAR(64) NOT NULL DEFAULT 'none';",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();",
+
+        "ALTER TABLE investor_profiles ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'candidate';",
+        "ALTER TABLE investor_profiles ADD COLUMN IF NOT EXISTS risk_ack BOOLEAN NOT NULL DEFAULT false;",
+        "ALTER TABLE investor_profiles ADD COLUMN IF NOT EXISTS referrer_tid BIGINT;",
+        "ALTER TABLE investor_profiles ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;",
+        "ALTER TABLE investor_profiles ADD COLUMN IF NOT EXISTS note TEXT;",
+        "ALTER TABLE investor_profiles ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();",
+        "ALTER TABLE investor_profiles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();",
+
+        "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS wallet_type VARCHAR(16) NOT NULL DEFAULT 'base';",
+        "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;",
+        "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS balance_slh NUMERIC(24, 6) NOT NULL DEFAULT 0;",
+        "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS balance_slha NUMERIC(24, 8) NOT NULL DEFAULT 0;",
+        "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS kind VARCHAR(50) NOT NULL DEFAULT 'base';",
+        "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS deposits_enabled BOOLEAN NOT NULL DEFAULT TRUE;",
+        "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS withdrawals_enabled BOOLEAN NOT NULL DEFAULT FALSE;",
+        "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();",
+        "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();",
     ]
 
     with engine.begin() as conn:
@@ -66,23 +159,16 @@ def _ensure_extras():
 
 def init_db():
     """
-    DB חדש: create_all חייב ליצור את כל הטבלאות.
-    אם זה נכשל — נדע בלוגים.
+    1) create_all לפי models (אופציונלי)
+    2) bootstrap + soft migration (חובה) כדי לתמוך גם ב-DB ריק
     """
-    _log_db_target()
+    try:
+        import app.models  # noqa: F401
+        Base.metadata.create_all(bind=engine)
+    except Exception:
+        logger.exception("Base.metadata.create_all failed (continuing with bootstrap)")
 
-    # לוודא שהמודלים נטענים ומרשמים ל-metadata
-    import app.models  # noqa: F401
-
-    Base.metadata.create_all(bind=engine)
-    _ensure_extras()
-
-    # sanity check: האם יש טבלאות בכלל?
-    with engine.begin() as conn:
-        n = conn.execute(
-            text("SELECT count(*) FROM information_schema.tables WHERE table_schema='public';")
-        ).scalar_one()
-        logger.info("DB sanity: public tables=%s", n)
+    _ensure_schema()
 
 
 def get_db():
