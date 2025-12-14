@@ -17,7 +17,6 @@ app = FastAPI(title="SLH Investor Gateway")
 
 @app.on_event("startup")
 async def startup_event():
-    # חשוב: קודם DB, ואז הבוט
     try:
         init_db()
         logger.info("DB initialized")
@@ -56,12 +55,11 @@ async def selftest():
 async def telegram_webhook(request: Request):
     """
     Telegram expects fast 200 responses.
-    Even if we hit an internal exception, we return 200 to avoid retries storms.
+    Even if we hit internal exception, we return 200 to avoid retry-storm.
     """
     try:
         update_dict = await request.json()
     except Exception:
-        # גוף לא תקין — עדיין מחזירים 200 כדי לא להיכנס ללופ ריטרייז
         logger.warning("Webhook received invalid JSON")
         return JSONResponse({"ok": False, "error": "invalid_json"}, status_code=status.HTTP_200_OK)
 
@@ -70,5 +68,4 @@ async def telegram_webhook(request: Request):
         return JSONResponse({"ok": True}, status_code=status.HTTP_200_OK)
     except Exception:
         logger.exception("Webhook processing failed")
-        # fallback: אל תפיל את webhook (טלגרם ינסה שוב אם לא 200)
         return JSONResponse({"ok": False}, status_code=status.HTTP_200_OK)
