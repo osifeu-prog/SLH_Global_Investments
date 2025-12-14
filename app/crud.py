@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Iterable
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app import models
@@ -12,6 +13,14 @@ from app import models
 
 def _utcnow():
     return datetime.now(timezone.utc)
+
+
+def _dec(x) -> Decimal:
+    if x is None:
+        return Decimal("0")
+    if isinstance(x, Decimal):
+        return x
+    return Decimal(str(x))
 
 
 # ---------- Users ----------
@@ -68,13 +77,11 @@ def get_or_create_wallet(
 ) -> models.Wallet:
     w = get_wallet(db, telegram_id, wallet_type)
     if w:
-        # normalize required fields
         w.wallet_type = wallet_type or w.wallet_type or "base"
         w.is_active = True if w.is_active is None else w.is_active
         w.balance_slh = Decimal("0") if w.balance_slh is None else w.balance_slh
         w.balance_slha = Decimal("0") if w.balance_slha is None else w.balance_slha
 
-        # keep policy aligned
         w.kind = kind
         w.deposits_enabled = deposits_enabled
         w.withdrawals_enabled = withdrawals_enabled
@@ -86,10 +93,10 @@ def get_or_create_wallet(
 
     w = models.Wallet(
         telegram_id=telegram_id,
-        wallet_type=wallet_type,     # NOT NULL
-        is_active=True,              # NOT NULL
-        balance_slh=Decimal("0"),    # NOT NULL
-        balance_slha=Decimal("0"),   # NOT NULL
+        wallet_type=wallet_type,
+        is_active=True,
+        balance_slh=Decimal("0"),
+        balance_slha=Decimal("0"),
         kind=kind,
         deposits_enabled=deposits_enabled,
         withdrawals_enabled=withdrawals_enabled,
@@ -147,8 +154,7 @@ def start_invest_onboarding(
     prof = get_investor_profile(db, telegram_id)
     if prof:
         prof.status = "candidate"
-        if prof.risk_ack is None:
-            prof.risk_ack = False
+        prof.risk_ack = False if prof.risk_ack is None else prof.risk_ack
         if referrer_tid is not None:
             prof.referrer_tid = referrer_tid
         if note is not None:
@@ -190,8 +196,7 @@ def approve_investor(db: Session, telegram_id: int) -> models.InvestorProfile:
 
     prof.status = "active"
     prof.approved_at = _utcnow()
-    if prof.risk_ack is None:
-        prof.risk_ack = False
+    prof.risk_ack = False if prof.risk_ack is None else prof.risk_ack
     prof.updated_at = _utcnow()
 
     db.add(prof)
@@ -215,11 +220,83 @@ def reject_investor(db: Session, telegram_id: int) -> models.InvestorProfile:
         prof = start_invest_onboarding(db, telegram_id, note="Auto-created on reject")
 
     prof.status = "rejected"
-    if prof.risk_ack is None:
-        prof.risk_ack = False
+    prof.risk_ack = False if prof.risk_ack is None else prof.risk_ack
     prof.updated_at = _utcnow()
 
     db.add(prof)
     db.commit()
     db.refresh(prof)
     return prof
+
+
+# ---------- Ledger (critical) ----------
+
+def add_ledger_entry(
+    db: Session,
+    *,
+    telegram_id: int,
+    wallet_type: str,
+    direction: str,
+    amount: Decimal,
+    currency: str,
+    reason: str = "manual",
+    meta: Optional[str] = None,
+) -> models.LedgerEntry:
+    e = models.LedgerEntry(
+        telegram_id=telegram_id,
+        wallet_type=wallet_type,
+        direction=direction,
+        amount=_dec(amount),
+        currency=currency,
+        reason=reason,
+        meta=meta,
+        created_at=_utcnow(),
+    )
+    db.add(e)
+    db.commit()
+    db.refresh(e)
+    return e
+
+
+def get_ledger_balance(
+    db: Session,
+    *,
+    telegram_id: int,
+    wallet_type: str,
+    currency: str,
+) -> Decimal:
+    # balance = sum(in) - sum(out)
+    in_sum = (
+        db.query(func.coalesce(func.sum(models.LedgerEntry.amount), 0))
+        .filter(
+            models.LedgerEntry.telegram_id == telegram_id,
+            models.LedgerEntry.wallet_type == wallet_type,
+            models.LedgerEntry.currency == currency,
+            models.LedgerEntry.direction == "in",
+        )
+        .scalar()
+    )
+    out_sum = (
+        db.query(func.coalesce(func.sum(models.LedgerEntry.amount), 0))
+        .filter(
+            models.LedgerEntry.telegram_id == telegram_id,
+            models.LedgerEntry.wallet_type == wallet_type,
+            models.LedgerEntry.currency == currency,
+            models.LedgerEntry.direction == "out",
+        )
+        .scalar()
+    )
+    return _dec(in_sum) - _dec(out_sum)
+
+
+def list_ledger_entries(
+    db: Session,
+    *,
+    telegram_id: int,
+    wallet_type: Optional[str] = None,
+    limit: int = 20,
+) -> list[models.LedgerEntry]:
+    q = db.query(models.LedgerEntry).filter(models.LedgerEntry.telegram_id == telegram_id)
+    if wallet_type:
+        q = q.filter(models.LedgerEntry.wallet_type == wallet_type)
+    return q.order_by(models.LedgerEntry.id.desc()).limit(int(limit)).all()
