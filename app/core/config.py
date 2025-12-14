@@ -13,11 +13,17 @@ class Settings(BaseSettings):
     WEBHOOK_URL: str | None = None
     ADMIN_USER_ID: str | None = None
 
-    # תגמולים אופציונליים
     SLHA_REWARD_REFERRAL: str | None = None
-
-    # טקסטים/שפה (לא חובה, אבל נוח)
     DEFAULT_LANGUAGE: str | None = "he"
+
+    # Deposits / treasury
+    TON_TREASURY_ADDRESS: str | None = None
+    USDT_TON_TREASURY_ADDRESS: str | None = None
+    DEFAULT_DEPOSIT_ASSET: str | None = "USDT_TON"  # USDT_TON / TON
+
+    # Yield model (accounting)
+    DEFAULT_APR: str | None = "0.0"  # e.g. 0.18 for 18%
+    LEDGER_DEFAULT_WALLET_TYPE: str | None = "investor"
 
 
 settings = Settings()
