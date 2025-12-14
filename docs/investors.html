@@ -1,29 +1,103 @@
-
-<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"/><title>SLH – Internal Transfers & Redemption</title></head>
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SLH Global Investments – מידע למשקיעים</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; margin:0; background:#070a14; color:#e5e7eb;}
+    .wrap{max-width:980px; margin:0 auto; padding:28px;}
+    .hero{padding:22px; border-radius:18px; background:linear-gradient(135deg, rgba(99,102,241,.25), rgba(16,185,129,.18)); border:1px solid rgba(255,255,255,.12);}
+    h1{margin:0 0 10px; font-size:34px;}
+    h2{margin:22px 0 10px; font-size:20px;}
+    p{line-height:1.8; margin:8px 0; opacity:.95}
+    .grid{display:grid; grid-template-columns:1fr; gap:14px; margin-top:14px;}
+    @media(min-width:900px){.grid{grid-template-columns:1fr 1fr;}}
+    .card{background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.10); border-radius:16px; padding:18px;}
+    ul{margin:10px 0 0; padding:0 18px;}
+    li{margin:8px 0; line-height:1.7;}
+    .kpi{display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;}
+    .kpi span{padding:7px 10px; border-radius:999px; border:1px solid rgba(255,255,255,.16); font-size:12px; opacity:.9;}
+    a{color:#a7f3d0; text-decoration:none}
+    .muted{opacity:.8; font-size:13px}
+    .hr{height:1px; background:rgba(255,255,255,.12); margin:18px 0}
+  </style>
+</head>
 <body>
-<h1>SLH Global Investments – Stage 2</h1>
+  <div class="wrap">
+    <div class="hero">
+      <h1>SLH Global Investments</h1>
+      <p>
+        פלטפורמת השקעות פרטית עם בקרה מלאה: רישום חשבונאי (Ledger), תוכנית חודשית, נקודות תגמול פנימיות (SLHA),
+        ותהליכי פדיון מבוקרים. המערכת נבנתה לשקיפות, עקביות ואבטחה תפעולית.
+      </p>
+      <div class="kpi">
+        <span>תוכנית: 30 יום</span>
+        <span>תשואה: 4% חודשי (בתום התקופה)</span>
+        <span>תגמול: SLHA (נקודות פנימיות)</span>
+        <span>On-chain SLH: מוכן (לא מופעל)</span>
+      </div>
+      <p class="muted">
+        מידע זה הינו הסבר תפעולי/טכנולוגי בלבד ואינו מהווה ייעוץ השקעות.
+      </p>
+    </div>
 
-<h2>Internal Transfers</h2>
-<p>
-Investors can freely transfer internal SLHA points between accounts.
-These transfers are recorded and auditable.
-</p>
+    <div class="grid">
+      <div class="card">
+        <h2>איך זה עובד</h2>
+        <ul>
+          <li>הפקדה מזוהה ונרשמת במערכת (USDT_TON)</li>
+          <li>נפתחת פוזיציה חודשית (30 יום)</li>
+          <li>בתום התקופה מתקבל תגמול של 4% כנקודות SLHA</li>
+          <li>SLHA ניתן להעברה פנימית או להגיש בקשת פדיון</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h2>SLHA – נקודות פנימיות</h2>
+        <p>
+          SLHA הן נקודות זכאות פנימיות. הן מאפשרות:
+        </p>
+        <ul>
+          <li>מסחר/העברה בתוך הקהילה</li>
+          <li>פדיון מבוקר לפי מדיניות (ותיקים/חדשים)</li>
+          <li>הכנה עתידית להמרה ל-SLH on-chain (כשהמנגנון יופעל)</li>
+        </ul>
+      </div>
+    </div>
 
-<h2>Redemption</h2>
-<p>
-Investors may request redemption of SLHA points.
-Requests are reviewed and approved by administrators.
-</p>
+    <div class="card" style="margin-top:14px;">
+      <h2>העברות פנימיות</h2>
+      <p>
+        ניתן להעביר SLHA בין משתמשים בצורה חופשית. כל פעולה נרשמת ב-Ledger ולכן קיימת שקיפות וביקורת מלאה.
+      </p>
+      <p class="muted">דוגמה: <b>/transfer 123456 10</b></p>
+    </div>
 
-<ul>
-<li>Regular redemption (after 30 days)</li>
-<li>Early redemption (reduced rate)</li>
-</ul>
+    <div class="card" style="margin-top:14px;">
+      <h2>פדיון (מבוקר אדמין)</h2>
+      <p>
+        ניתן להגיש בקשת פדיון SLHA. הבקשה עוברת אישור אדמין כדי לשמור על ניהול סיכונים והגנה על כלל המשקיעים.
+      </p>
+      <ul>
+        <li>פדיון רגיל לאחר 30 יום</li>
+        <li>פדיון מוקדם עשוי לכלול יחס פדיון שונה (Policy)</li>
+        <li>On-chain SLH מוכן טכנית אך אינו מופעל אוטומטית בשלב זה</li>
+      </ul>
+      <p class="muted">דוגמה: <b>/redeem 50</b></p>
+    </div>
 
-<p>
-On-chain crypto transfers are prepared but not enabled yet.
-</p>
+    <div id="faq" class="card" style="margin-top:14px;">
+      <h2>שאלות נפוצות</h2>
+      <p><b>האם קריפטו נשלח אוטומטית?</b><br/>לא. בשלב זה אין יציאה אוטומטית on-chain.</p>
+      <div class="hr"></div>
+      <p><b>איך רואים נתונים?</b><br/>דרך בוט הטלגרם: /whoami /balance /statement /myplan</p>
+      <div class="hr"></div>
+      <p><b>איך מגינים על הכספים?</b><br/>כל תנועה עוברת רישום חשבונאי + בקרות אדמין + Audit Trail.</p>
+    </div>
+
+    <p class="muted" style="margin-top:18px;">
+      לשאלות נוספות: פנו למנהל המערכת דרך הבוט.
+    </p>
+  </div>
 </body>
 </html>

@@ -1,9 +1,8 @@
+# app/blockchain.py
+# On-chain SLH hook – prepared but NOT enabled.
+# We keep it as a strict stub so nothing can accidentally send funds.
 
-# ON-CHAIN HOOK (STUB ONLY – NOT ACTIVE)
+from __future__ import annotations
 
-def send_slh_onchain(address:str, amount):
-    '''
-    This function is intentionally DISABLED.
-    It is a future hook for SLH token distribution.
-    '''
-    raise NotImplementedError("On-chain SLH transfer not enabled yet")
+def send_slh_onchain(*, to_address: str, amount_slh, meta: dict | None = None):
+    raise NotImplementedError("On-chain SLH transfer hook is prepared but NOT enabled.")
