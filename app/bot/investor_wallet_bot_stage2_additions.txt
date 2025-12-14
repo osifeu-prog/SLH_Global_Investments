@@ -1,0 +1,12 @@
+
+# ADD THESE COMMANDS INTO investor_wallet_bot.py
+
+/transfer <telegram_id> <amount>
+/redeem <amount>
+
+(Admin)
+/admin_redemptions
+/admin_approve_redeem <id>
+/admin_reject_redeem <id>
+
+Handlers logic provided in documentation.
