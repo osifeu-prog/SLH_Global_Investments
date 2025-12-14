@@ -23,7 +23,6 @@ from app import crud
 logger = logging.getLogger(__name__)
 
 STATE_AWAITING_BNB_ADDRESS = "AWAITING_BNB_ADDRESS"
-STATE_AWAITING_TRANSFER = "AWAITING_TRANSFER"  # ✅ added (optional)
 
 
 def _dec(x) -> Decimal:
@@ -43,7 +42,7 @@ class InvestorWalletBot:
         return SessionLocal()
 
     def _is_admin(self, telegram_id: int) -> bool:
-        return bool(settings.ADMIN_USER_ID) and str(telegram_id) == str(settings.ADMIN_USER_ID)
+        return bool(getattr(settings, "ADMIN_USER_ID", None)) and str(telegram_id) == str(settings.ADMIN_USER_ID)
 
     # -------- UI --------
 
@@ -67,10 +66,7 @@ class InvestorWalletBot:
                     InlineKeyboardButton("🔗 קישור כתובת BNB", callback_data="MENU:LINK_BNB"),
                 ],
                 [
-                    InlineKeyboardButton("🔁 העברת SLHA", callback_data="MENU:TRANSFER_SLHA"),  # ✅ added (optional)
                     InlineKeyboardButton("❓ עזרה", callback_data="MENU:HELP"),
-                ],
-                [
                     InlineKeyboardButton("🛠 אדמין", callback_data="MENU:ADMIN"),
                 ],
             ]
@@ -86,7 +82,7 @@ class InvestorWalletBot:
         )
 
     async def initialize(self):
-        if not settings.BOT_TOKEN:
+        if not getattr(settings, "BOT_TOKEN", None):
             logger.warning("BOT_TOKEN missing, bot disabled")
             return
 
@@ -107,8 +103,9 @@ class InvestorWalletBot:
         self.application.add_handler(CommandHandler("statement", self.cmd_statement))
         self.application.add_handler(CommandHandler("admin", self.cmd_admin))
 
-        # ✅ SLHA transfers
+        # SLHA only:
         self.application.add_handler(CommandHandler("transfer", self.cmd_transfer))
+        self.application.add_handler(CommandHandler("admin_credit", self.cmd_admin_credit))
 
         # Callback menu
         self.application.add_handler(CallbackQueryHandler(self.cb_menu))
@@ -122,7 +119,7 @@ class InvestorWalletBot:
         await self.application.initialize()
 
         # Webhook
-        if settings.WEBHOOK_URL:
+        if getattr(settings, "WEBHOOK_URL", None):
             url = f"{settings.WEBHOOK_URL.rstrip('/')}/webhook/telegram"
             await self.application.bot.set_webhook(url)
             logger.info(f"Webhook set: {url}")
@@ -152,7 +149,6 @@ class InvestorWalletBot:
         )
 
     def _ensure_investor_wallet_if_needed(self, db, telegram_id: int):
-        # only if they started onboarding (or active)
         prof = crud.get_investor_profile(db, telegram_id)
         if prof and str(prof.status).lower() in ("candidate", "active", "approved"):
             crud.get_or_create_wallet(
@@ -219,11 +215,12 @@ class InvestorWalletBot:
             "/statement – דוח תנועות\n"
             "/referrals – הפניות\n"
             "/invest – בקשת השקעה\n"
-            "/link_wallet – קישור כתובת BNB\n"
-            "/transfer <telegram_id> <amount> [note] – העברת SLHA פנימית ✅\n"
+            "/link_wallet – קישור כתובת BNB\n\n"
+            "SLHA:\n"
+            "/transfer <to_tid> <amount> – העברת SLHA\n"
         )
         if self._is_admin(update.effective_user.id):
-            txt += "\n/admin – פאנל אדמין"
+            txt += "\nאדמין:\n/admin_credit <tid> <amount> [note]\n/admin – פאנל"
         await update.message.reply_text(txt)
 
     async def cmd_whoami(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -232,8 +229,8 @@ class InvestorWalletBot:
         try:
             user = crud.get_or_create_user(db, tg.id, tg.username)
             prof = crud.get_investor_profile(db, tg.id)
-
             status = "אין" if not prof else str(prof.status)
+
             txt = (
                 "👤 פרופיל\n\n"
                 f"ID: {tg.id}\n"
@@ -264,8 +261,7 @@ class InvestorWalletBot:
             lines = ["💼 הארנקים שלך:\n"]
             for w in wallets:
                 lines.append(
-                    f"- {w.wallet_type.upper()} | "
-                    f"סוג: {w.kind} | "
+                    f"- {w.wallet_type.upper()} | סוג: {w.kind} | "
                     f"הפקדות: {'✅' if w.deposits_enabled else '❌'} | "
                     f"משיכות: {'✅' if w.withdrawals_enabled else '❌'}"
                 )
@@ -304,7 +300,6 @@ class InvestorWalletBot:
                 await update.message.reply_text("✅ כבר יש לך סטטוס משקיע פעיל.")
                 return
 
-            # if came through referral - attach
             ref = (
                 db.query(models.Referral)
                 .filter(models.Referral.referred_tid == tg.id)
@@ -313,31 +308,22 @@ class InvestorWalletBot:
             )
             referrer_tid = ref.referrer_tid if ref else None
 
-            crud.start_invest_onboarding(
-                db,
-                tg.id,
-                referrer_tid=referrer_tid,
-                note="Requested via bot",
-            )
+            crud.start_invest_onboarding(db, tg.id, referrer_tid=referrer_tid, note="Requested via bot")
 
             await update.message.reply_text(
                 "📥 בקשת השקעה נשלחה.\n\n"
                 "נפתח לך ארנק משקיע (הפקדות בלבד).\n"
-                "לאחר אישור אדמין – הסטטוס יעודכן.\n\n"
-                "בינתיים אפשר להפקיד, עם Memo לפי ה-ID שלך."
+                "לאחר אישור אדמין – הסטטוס יעודכן.\n"
             )
         finally:
             db.close()
 
     async def cmd_deposit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         tg = update.effective_user
+        asset = (getattr(settings, "DEFAULT_DEPOSIT_ASSET", "USDT_TON") or "USDT_TON").upper()
 
-        asset = (settings.DEFAULT_DEPOSIT_ASSET or "USDT_TON").upper()
-        addr = settings.USDT_TON_TREASURY_ADDRESS if asset == "USDT_TON" else settings.TON_TREASURY_ADDRESS
-        addr = addr or settings.TON_TREASURY_ADDRESS or "MISSING_TREASURY_ADDRESS"
-
-        # deposit target wallet_type
-        wallet_type = "investor" if crud.is_investor_active(self._db(), tg.id) else "investor"
+        addr = getattr(settings, "USDT_TON_TREASURY_ADDRESS", None) if asset == "USDT_TON" else getattr(settings, "TON_TREASURY_ADDRESS", None)
+        addr = addr or getattr(settings, "TON_TREASURY_ADDRESS", None) or "MISSING_TREASURY_ADDRESS"
 
         txt = (
             "💰 הפקדה\n\n"
@@ -345,7 +331,7 @@ class InvestorWalletBot:
             f"{addr}\n\n"
             f"חשוב: הוסף Memo/Comment (הערה) = {tg.id}\n"
             "ככה נוכל להצמיד הפקדה למשתמש בצורה חד-משמעית.\n\n"
-            f"ארנק יעד במערכת: {wallet_type}\n"
+            "ארנק יעד במערכת: investor\n"
         )
         await update.message.reply_text(txt)
 
@@ -353,17 +339,15 @@ class InvestorWalletBot:
         tg = update.effective_user
         db = self._db()
         try:
-            # show internal balances from ledger (ILS/USDT_TON/Ton etc)
-            # We’ll start with USDT_TON as accounting anchor.
             usdt = crud.get_ledger_balance(db, telegram_id=tg.id, wallet_type="investor", currency="USDT_TON")
             ton = crud.get_ledger_balance(db, telegram_id=tg.id, wallet_type="investor", currency="TON")
+            user = crud.get_or_create_user(db, tg.id, tg.username)
 
-            apr = settings.DEFAULT_APR or "0.18"
             txt = (
                 "📊 יתרה (לפי Ledger פנימי)\n\n"
                 f"USDT_TON: {usdt:,.6f}\n"
                 f"TON: {ton:,.6f}\n\n"
-                f"APR תצוגה/תוכנית: {apr}\n"
+                f"SLHA (נקודות): {_dec(user.slha_balance):,.8f}\n"
             )
             await update.message.reply_text(txt)
         finally:
@@ -380,10 +364,75 @@ class InvestorWalletBot:
 
             lines = ["🧾 דוח תנועות (15 אחרונות)\n"]
             for r in rows:
-                lines.append(
-                    f"- #{r.id} | {r.created_at} | {r.direction.upper()} | {r.amount} {r.currency} | {r.reason}"
-                )
+                lines.append(f"- #{r.id} | {r.created_at} | {r.direction.upper()} | {r.amount} {r.currency} | {r.reason}")
             await update.message.reply_text("\n".join(lines))
+        finally:
+            db.close()
+
+    # -------------------------
+    # SLHA only: transfer & admin_credit
+    # -------------------------
+
+    async def cmd_transfer(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        /transfer <to_tid> <amount> [note...]
+        """
+        tg = update.effective_user
+        if not context.args or len(context.args) < 2:
+            await update.message.reply_text("שימוש: /transfer <to_tid> <amount> [note]")
+            return
+
+        try:
+            to_tid = int(context.args[0])
+            amount = Decimal(str(context.args[1]))
+            note = " ".join(context.args[2:]).strip() if len(context.args) > 2 else None
+        except Exception:
+            await update.message.reply_text("פורמט לא תקין. שימוש: /transfer <to_tid> <amount> [note]")
+            return
+
+        db = self._db()
+        try:
+            crud.get_or_create_user(db, tg.id, tg.username)
+            crud.get_or_create_user(db, to_tid, None)
+            res = crud.transfer_slha(db, from_tid=tg.id, to_tid=to_tid, amount=amount, note=note)
+            await update.message.reply_text(
+                "✅ העברה בוצעה\n\n"
+                f"אל: {res['to_tid']}\n"
+                f"סכום: {res['amount']} SLHA\n"
+                f"יתרה שלך: {res['from_balance']} SLHA"
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ לא הצלחתי לבצע העברה: {e}")
+        finally:
+            db.close()
+
+    async def cmd_admin_credit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        /admin_credit <tid> <amount> [note...]
+        """
+        tg = update.effective_user
+        if not self._is_admin(tg.id):
+            await update.message.reply_text("אין הרשאה.")
+            return
+
+        if not context.args or len(context.args) < 2:
+            await update.message.reply_text("שימוש: /admin_credit <tid> <amount> [note]")
+            return
+
+        try:
+            target_tid = int(context.args[0])
+            amount = Decimal(str(context.args[1]))
+            note = " ".join(context.args[2:]).strip() if len(context.args) > 2 else None
+        except Exception:
+            await update.message.reply_text("פורמט לא תקין. שימוש: /admin_credit <tid> <amount> [note]")
+            return
+
+        db = self._db()
+        try:
+            res = crud.admin_credit_slha(db, telegram_id=target_tid, amount=amount, note=note)
+            await update.message.reply_text(f"✅ זיכוי אדמין בוצע: {res['amount']} SLHA ל-{res['telegram_id']}\nיתרה: {res['balance']}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ נכשל: {e}")
         finally:
             db.close()
 
@@ -393,65 +442,7 @@ class InvestorWalletBot:
             return
         await update.message.reply_text("🛠 פאנל אדמין:", reply_markup=self._admin_markup())
 
-    # ✅ NEW: /transfer command (SLHA only)
-    async def cmd_transfer(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        /transfer <telegram_id> <amount> [note]
-        SLHA internal transfer only.
-        """
-        tg = update.effective_user
-
-        if not context.args or len(context.args) < 2:
-            await update.message.reply_text("שימוש: /transfer <telegram_id> <amount> [note]")
-            return
-
-        try:
-            to_tid = int(str(context.args[0]).strip())
-        except Exception:
-            await update.message.reply_text("telegram_id לא תקין (צריך מספר).")
-            return
-
-        try:
-            amount = Decimal(str(context.args[1]).strip())
-        except Exception:
-            await update.message.reply_text("amount לא תקין.")
-            return
-
-        note = " ".join(context.args[2:]).strip() if len(context.args) > 2 else None
-
-        if amount <= 0:
-            await update.message.reply_text("amount חייב להיות גדול מ-0.")
-            return
-        if to_tid == tg.id:
-            await update.message.reply_text("אי אפשר להעביר לעצמך.")
-            return
-
-        db = self._db()
-        try:
-            # make sure users exist
-            crud.get_or_create_user(db, tg.id, tg.username)
-            crud.get_or_create_user(db, to_tid, None)
-
-            res = crud.transfer_slha(
-                db,
-                from_tid=tg.id,
-                to_tid=to_tid,
-                amount=amount,
-                note=note,
-            )
-
-            await update.message.reply_text(
-                "✅ בוצעה העברה (SLHA)\n\n"
-                f"אל: {to_tid}\n"
-                f"סכום: {res.get('amount', str(amount))} SLHA\n"
-                f"יתרה חדשה (שולח): {res.get('from_balance', '—')}\n"
-            )
-        except Exception as e:
-            await update.message.reply_text(f"❌ לא ניתן לבצע העברה: {e}")
-        finally:
-            db.close()
-
-    # -------- Callback menu (NO fake updates) --------
+    # -------- Callback menu --------
 
     async def cb_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         q = update.callback_query
@@ -459,39 +450,31 @@ class InvestorWalletBot:
         data = q.data or ""
         tg = update.effective_user
 
-        # route to "message-based" helpers
         if data == "MENU:WHOAMI":
-            await self._whoami_to_message(q.message, tg.id, tg.username)
+            await self.cmd_whoami(update, context)
             return
         if data == "MENU:WALLETS":
-            await self._wallets_to_message(q.message, tg.id)
+            await self.cmd_wallet(update, context)
             return
         if data == "MENU:DEPOSIT":
-            await self._deposit_to_message(q.message, tg.id)
+            await self.cmd_deposit(update, context)
             return
         if data == "MENU:BALANCE":
-            await self._balance_to_message(q.message, tg.id)
+            await self.cmd_balance(update, context)
             return
         if data == "MENU:STATEMENT":
-            await self._statement_to_message(q.message, tg.id)
+            await self.cmd_statement(update, context)
             return
         if data == "MENU:REFERRALS":
-            await self._referrals_to_message(q.message, tg.id)
+            await self.cmd_referrals(update, context)
             return
         if data == "MENU:INVEST":
-            await self._invest_to_message(q.message, tg.id)
+            await self.cmd_invest(update, context)
             return
         if data == "MENU:LINK_BNB":
             context.user_data["state"] = STATE_AWAITING_BNB_ADDRESS
             await q.message.reply_text("שלח עכשיו כתובת BNB (מתחילה ב-0x...)")
             return
-
-        # ✅ added (optional): menu transfer prompt
-        if data == "MENU:TRANSFER_SLHA":
-            context.user_data["state"] = STATE_AWAITING_TRANSFER
-            await q.message.reply_text("שלח: <telegram_id> <amount> [note]\nדוגמה: 123456789 10 תודה")
-            return
-
         if data == "MENU:HELP":
             await q.message.reply_text("נסה /help או /menu")
             return
@@ -502,230 +485,12 @@ class InvestorWalletBot:
             await q.message.reply_text("🛠 פאנל אדמין:", reply_markup=self._admin_markup())
             return
 
-        # admin actions
-        if data == "ADMIN:STATUS":
-            if not self._is_admin(tg.id):
-                return
-            db = self._db()
-            try:
-                users = db.query(models.User).count()
-                wallets = db.query(models.Wallet).count()
-                pending = db.query(models.InvestorProfile).filter(models.InvestorProfile.status == "candidate").count()
-                active = db.query(models.InvestorProfile).filter(models.InvestorProfile.status == "active").count()
-                txt = (
-                    "📊 סטטוס מערכת\n\n"
-                    f"משתמשים: {users}\n"
-                    f"ארנקים: {wallets}\n"
-                    f"ממתינים לאישור: {pending}\n"
-                    f"משקיעים פעילים: {active}\n"
-                )
-            finally:
-                db.close()
-            await q.message.reply_text(txt)
-            return
-
-        if data == "ADMIN:APPROVE":
-            if not self._is_admin(tg.id):
-                return
-            context.user_data["admin_state"] = "AWAIT_APPROVE_ID"
-            await q.message.reply_text("שלח Telegram ID לאישור (מספר בלבד).")
-            return
-
-        if data == "ADMIN:REJECT":
-            if not self._is_admin(tg.id):
-                return
-            context.user_data["admin_state"] = "AWAIT_REJECT_ID"
-            await q.message.reply_text("שלח Telegram ID לדחייה (מספר בלבד).")
-            return
-
-    # ---- helper replies ----
-
-    async def _whoami_to_message(self, message, telegram_id: int, username: Optional[str]):
-        db = self._db()
-        try:
-            user = crud.get_or_create_user(db, telegram_id, username)
-            prof = crud.get_investor_profile(db, telegram_id)
-            status = "אין" if not prof else str(prof.status)
-            txt = (
-                "👤 פרופיל\n\n"
-                f"ID: {telegram_id}\n"
-                f"שם משתמש: @{username}\n"
-                f"BNB: {user.bnb_address or 'לא מחובר'}\n"
-                f"SLH (פנימי): {_dec(user.balance_slh):,.6f}\n"
-                f"SLHA (נקודות): {_dec(user.slha_balance):,.8f}\n\n"
-                f"סטטוס משקיע: {status}\n"
-            )
-            await message.reply_text(txt)
-        finally:
-            db.close()
-
-    async def _wallets_to_message(self, message, telegram_id: int):
-        db = self._db()
-        try:
-            self._ensure_base_wallet(db, telegram_id)
-            self._ensure_investor_wallet_if_needed(db, telegram_id)
-            wallets = (
-                db.query(models.Wallet)
-                .filter(models.Wallet.telegram_id == telegram_id)
-                .order_by(models.Wallet.wallet_type.asc())
-                .all()
-            )
-            lines = ["💼 הארנקים שלך:\n"]
-            for w in wallets:
-                lines.append(
-                    f"- {w.wallet_type.upper()} | סוג: {w.kind} | "
-                    f"הפקדות: {'✅' if w.deposits_enabled else '❌'} | "
-                    f"משיכות: {'✅' if w.withdrawals_enabled else '❌'}"
-                )
-            await message.reply_text("\n".join(lines))
-        finally:
-            db.close()
-
-    async def _deposit_to_message(self, message, telegram_id: int):
-        asset = (settings.DEFAULT_DEPOSIT_ASSET or "USDT_TON").upper()
-        addr = settings.USDT_TON_TREASURY_ADDRESS if asset == "USDT_TON" else settings.TON_TREASURY_ADDRESS
-        addr = addr or settings.TON_TREASURY_ADDRESS or "MISSING_TREASURY_ADDRESS"
-        txt = (
-            "💰 הפקדה\n\n"
-            f"שלח {('USDT (על TON)' if asset == 'USDT_TON' else 'TON')} לכתובת הבאה:\n"
-            f"{addr}\n\n"
-            f"חשוב: הוסף Memo/Comment (הערה) = {telegram_id}\n"
-            "ככה נוכל להצמיד הפקדה למשתמש בצורה חד-משמעית.\n\n"
-            "ארנק יעד במערכת: investor\n"
-        )
-        await message.reply_text(txt)
-
-    async def _balance_to_message(self, message, telegram_id: int):
-        db = self._db()
-        try:
-            usdt = crud.get_ledger_balance(db, telegram_id=telegram_id, wallet_type="investor", currency="USDT_TON")
-            ton = crud.get_ledger_balance(db, telegram_id=telegram_id, wallet_type="investor", currency="TON")
-            txt = (
-                "📊 יתרה (לפי Ledger פנימי)\n\n"
-                f"USDT_TON: {usdt:,.6f}\n"
-                f"TON: {ton:,.6f}\n"
-            )
-            await message.reply_text(txt)
-        finally:
-            db.close()
-
-    async def _statement_to_message(self, message, telegram_id: int):
-        db = self._db()
-        try:
-            rows = crud.list_ledger_entries(db, telegram_id=telegram_id, wallet_type="investor", limit=15)
-            if not rows:
-                await message.reply_text("🧾 אין תנועות עדיין.")
-                return
-            lines = ["🧾 דוח תנועות (15 אחרונות)\n"]
-            for r in rows:
-                lines.append(
-                    f"- #{r.id} | {r.created_at} | {r.direction.upper()} | {r.amount} {r.currency} | {r.reason}"
-                )
-            await message.reply_text("\n".join(lines))
-        finally:
-            db.close()
-
-    async def _referrals_to_message(self, message, telegram_id: int):
-        db = self._db()
-        try:
-            count = crud.count_referrals(db, telegram_id)
-            bot_username = self._bot_username or "YOUR_BOT"
-            link = f"https://t.me/{bot_username}?start=ref_{telegram_id}"
-            txt = (
-                "🎁 תוכנית הפניות\n\n"
-                f"קישור אישי:\n{link}\n\n"
-                f"מספר הפניות: {count}\n"
-            )
-            await message.reply_text(txt)
-        finally:
-            db.close()
-
-    async def _invest_to_message(self, message, telegram_id: int):
-        db = self._db()
-        try:
-            self._ensure_base_wallet(db, telegram_id)
-
-            if crud.is_investor_active(db, telegram_id):
-                await message.reply_text("✅ כבר יש לך סטטוס משקיע פעיל.")
-                return
-
-            ref = (
-                db.query(models.Referral)
-                .filter(models.Referral.referred_tid == telegram_id)
-                .order_by(models.Referral.id.desc())
-                .first()
-            )
-            referrer_tid = ref.referrer_tid if ref else None
-
-            crud.start_invest_onboarding(db, telegram_id, referrer_tid=referrer_tid, note="Requested via bot")
-
-            await message.reply_text(
-                "📥 בקשת השקעה נשלחה.\n\n"
-                "נפתח לך ארנק משקיע (הפקדות בלבד).\n"
-                "לאחר אישור אדמין – הסטטוס יעודכן.\n"
-            )
-        finally:
-            db.close()
-
     # -------- Text handler --------
 
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         txt = (update.message.text or "").strip()
 
-        # Admin flow
-        admin_state = context.user_data.get("admin_state")
-        if admin_state and self._is_admin(update.effective_user.id):
-            if txt.isdigit():
-                target = int(txt)
-                db = self._db()
-                try:
-                    if admin_state == "AWAIT_APPROVE_ID":
-                        crud.approve_investor(db, target)
-                        await update.message.reply_text(f"✅ אושר משקיע: {target}")
-                    elif admin_state == "AWAIT_REJECT_ID":
-                        crud.reject_investor(db, target)
-                        await update.message.reply_text(f"❌ נדחה משקיע: {target}")
-                finally:
-                    db.close()
-                context.user_data["admin_state"] = None
-            else:
-                await update.message.reply_text("נא לשלוח מספר בלבד.")
-            return
-
-        # ✅ Optional: transfer state via menu
         state = context.user_data.get("state")
-        if state == STATE_AWAITING_TRANSFER:
-            context.user_data["state"] = None
-            parts = txt.split()
-            if len(parts) < 2:
-                await update.message.reply_text("פורמט לא תקין. שלח: <telegram_id> <amount> [note]")
-                return
-            try:
-                to_tid = int(parts[0])
-                amount = Decimal(parts[1])
-            except Exception:
-                await update.message.reply_text("telegram_id/amount לא תקינים.")
-                return
-            note = " ".join(parts[2:]).strip() if len(parts) > 2 else None
-
-            db = self._db()
-            try:
-                crud.get_or_create_user(db, update.effective_user.id, update.effective_user.username)
-                crud.get_or_create_user(db, to_tid, None)
-                res = crud.transfer_slha(db, from_tid=update.effective_user.id, to_tid=to_tid, amount=amount, note=note)
-                await update.message.reply_text(
-                    "✅ בוצעה העברה (SLHA)\n\n"
-                    f"אל: {to_tid}\n"
-                    f"סכום: {res.get('amount', str(amount))} SLHA\n"
-                    f"יתרה חדשה (שולח): {res.get('from_balance', '—')}\n"
-                )
-            except Exception as e:
-                await update.message.reply_text(f"❌ לא ניתן לבצע העברה: {e}")
-            finally:
-                db.close()
-            return
-
-        # User state: awaiting BNB address
         if state == STATE_AWAITING_BNB_ADDRESS:
             context.user_data["state"] = None
             if not (txt.startswith("0x") and len(txt) >= 10):
