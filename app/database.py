@@ -2,182 +2,175 @@
 from __future__ import annotations
 
 import logging
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+import os
+from contextlib import contextmanager
+from typing import Generator
 
-from app.core.config import settings
-from app.models import Base  # Base מיובא מ-models
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker, Session
+
+from app.models import Base  # keep import for ORM usage
 
 logger = logging.getLogger(__name__)
 
-engine = create_engine(
-    settings.DATABASE_URL,
-    future=True,
-    pool_pre_ping=True,
-)
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine,
-    future=True,
-)
+# Railway uses postgres:// sometimes; SQLAlchemy expects postgresql://
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+_engine = None
+_SessionLocal = None
 
 
-def _ensure_schema():
-    """
-    Bootstrap + soft-migration:
-    1) יוצר טבלאות בסיסיות אם DB חדש וריק (CREATE TABLE IF NOT EXISTS)
-    2) מוסיף עמודות/אינדקסים אם חסרים (ALTER/CREATE INDEX IF NOT EXISTS)
-    """
-
-    statements: list[str] = [
-        # -------------------------
-        # BOOTSTRAP TABLES (DB ריק)
-        # -------------------------
-        """
-        CREATE TABLE IF NOT EXISTS users (
-          telegram_id BIGINT PRIMARY KEY,
-          username VARCHAR(255),
-          bnb_address VARCHAR(255),
-          balance_slh NUMERIC(24,6) NOT NULL DEFAULT 0,
-          slha_balance NUMERIC(24,8) NOT NULL DEFAULT 0,
-          role VARCHAR(64) NOT NULL DEFAULT 'user',
-          investor_status VARCHAR(64) NOT NULL DEFAULT 'none',
-          created_at TIMESTAMPTZ DEFAULT now(),
-          updated_at TIMESTAMPTZ DEFAULT now()
-        );
-        """,
-        "CREATE INDEX IF NOT EXISTS ix_users_telegram_id ON users(telegram_id);",
-        "CREATE INDEX IF NOT EXISTS ix_users_username ON users(username);",
-
-        """
-        CREATE TABLE IF NOT EXISTS investor_profiles (
-          telegram_id BIGINT PRIMARY KEY,
-          status VARCHAR(32) NOT NULL DEFAULT 'candidate',
-          risk_ack BOOLEAN NOT NULL DEFAULT false,
-          referrer_tid BIGINT,
-          approved_at TIMESTAMPTZ,
-          note TEXT,
-          created_at TIMESTAMPTZ DEFAULT now(),
-          updated_at TIMESTAMPTZ DEFAULT now()
-        );
-        """,
-        "CREATE INDEX IF NOT EXISTS ix_investor_profiles_status ON investor_profiles(status);",
-        "CREATE INDEX IF NOT EXISTS ix_investor_profiles_telegram_id ON investor_profiles(telegram_id);",
-
-        """
-        CREATE TABLE IF NOT EXISTS wallets (
-          id SERIAL PRIMARY KEY,
-          telegram_id BIGINT NOT NULL,
-          wallet_type VARCHAR(16) NOT NULL DEFAULT 'base',
-          is_active BOOLEAN NOT NULL DEFAULT true,
-          balance_slh NUMERIC(24,6) NOT NULL DEFAULT 0,
-          balance_slha NUMERIC(24,8) NOT NULL DEFAULT 0,
-          kind VARCHAR(50) NOT NULL DEFAULT 'base',
-          deposits_enabled BOOLEAN NOT NULL DEFAULT true,
-          withdrawals_enabled BOOLEAN NOT NULL DEFAULT false,
-          created_at TIMESTAMPTZ DEFAULT now(),
-          updated_at TIMESTAMPTZ DEFAULT now()
-        );
-        """,
-        "CREATE INDEX IF NOT EXISTS ix_wallets_id ON wallets(id);",
-        "CREATE INDEX IF NOT EXISTS ix_wallets_telegram_id ON wallets(telegram_id);",
-        "CREATE INDEX IF NOT EXISTS ix_wallets_wallet_type ON wallets(wallet_type);",
-
-        """
-        CREATE TABLE IF NOT EXISTS referrals (
-          id SERIAL PRIMARY KEY,
-          referrer_tid BIGINT NOT NULL,
-          referred_tid BIGINT NOT NULL,
-          created_at TIMESTAMPTZ DEFAULT now()
-        );
-        """,
-        "CREATE INDEX IF NOT EXISTS ix_referrals_referrer_tid ON referrals(referrer_tid);",
-        "CREATE INDEX IF NOT EXISTS ix_referrals_referred_tid ON referrals(referred_tid);",
-
-        """
-        CREATE TABLE IF NOT EXISTS transactions (
-          id SERIAL PRIMARY KEY,
-          created_at TIMESTAMPTZ DEFAULT now(),
-          from_user BIGINT,
-          to_user BIGINT,
-          amount_slh NUMERIC(24,6) NOT NULL,
-          tx_type VARCHAR(50) NOT NULL
-        );
-        """,
-        "CREATE INDEX IF NOT EXISTS ix_transactions_id ON transactions(id);",
-
-        """
-        CREATE TABLE IF NOT EXISTS ledger_entries (
-          id SERIAL PRIMARY KEY,
-          telegram_id BIGINT NOT NULL,
-          wallet_type VARCHAR(16) NOT NULL DEFAULT 'base',
-          direction VARCHAR(16) NOT NULL, -- in/out
-          amount NUMERIC(24,8) NOT NULL,
-          currency VARCHAR(16) NOT NULL DEFAULT 'ILS',
-          reason VARCHAR(64) NOT NULL DEFAULT 'manual',
-          meta TEXT,
-          created_at TIMESTAMPTZ DEFAULT now()
-        );
-        """,
-        "CREATE INDEX IF NOT EXISTS ix_ledger_entries_tid ON ledger_entries(telegram_id);",
-        "CREATE INDEX IF NOT EXISTS ix_ledger_entries_wallet_type ON ledger_entries(wallet_type);",
-
-        # -------------------------
-        # SOFT-MIGRATIONS (עמודות)
-        # -------------------------
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS slha_balance NUMERIC(24, 8) NOT NULL DEFAULT 0;",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(64) NOT NULL DEFAULT 'user';",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS investor_status VARCHAR(64) NOT NULL DEFAULT 'none';",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();",
-
-        "ALTER TABLE investor_profiles ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'candidate';",
-        "ALTER TABLE investor_profiles ADD COLUMN IF NOT EXISTS risk_ack BOOLEAN NOT NULL DEFAULT false;",
-        "ALTER TABLE investor_profiles ADD COLUMN IF NOT EXISTS referrer_tid BIGINT;",
-        "ALTER TABLE investor_profiles ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;",
-        "ALTER TABLE investor_profiles ADD COLUMN IF NOT EXISTS note TEXT;",
-        "ALTER TABLE investor_profiles ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();",
-        "ALTER TABLE investor_profiles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();",
-
-        "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS wallet_type VARCHAR(16) NOT NULL DEFAULT 'base';",
-        "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;",
-        "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS balance_slh NUMERIC(24, 6) NOT NULL DEFAULT 0;",
-        "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS balance_slha NUMERIC(24, 8) NOT NULL DEFAULT 0;",
-        "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS kind VARCHAR(50) NOT NULL DEFAULT 'base';",
-        "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS deposits_enabled BOOLEAN NOT NULL DEFAULT TRUE;",
-        "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS withdrawals_enabled BOOLEAN NOT NULL DEFAULT FALSE;",
-        "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();",
-        "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();",
-    ]
-
-    with engine.begin() as conn:
-        for sql in statements:
-            conn.execute(text(sql))
+def get_engine():
+    global _engine, _SessionLocal
+    if _engine is None:
+        if not DATABASE_URL:
+            raise RuntimeError("DATABASE_URL is not set")
+        _engine = create_engine(
+            DATABASE_URL,
+            pool_pre_ping=True,
+            future=True,
+        )
+        _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_engine, future=True)
+    return _engine
 
 
-def init_db():
-    """
-    Bootstrap schema in a safe, idempotent way.
-
-    ⚠️ We avoid `Base.metadata.create_all()` in production because it may attempt
-    to (re)create indexes and fail with "already exists" across redeploys.
-    All schema bootstrapping is handled in `_ensure_schema()` using IF NOT EXISTS.
-    """
-    # Ensure models are importable (register Base mappings)
-    try:
-        import app.models  # noqa: F401
-    except Exception:
-        logger.exception("Import app.models failed")
-
-    _ensure_schema()
+def get_sessionmaker():
+    if _SessionLocal is None:
+        get_engine()
+    return _SessionLocal
 
 
-def get_db():
-():
+@contextmanager
+def db_session() -> Generator[Session, None, None]:
+    SessionLocal = get_sessionmaker()
     db = SessionLocal()
     try:
         yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
+
+
+def get_db() -> Generator[Session, None, None]:
+    with db_session() as db:
+        yield db
+
+
+def _ensure_schema(engine) -> None:
+    """Create missing tables/indexes safely (idempotent).
+
+    We intentionally avoid dialect-specific kwargs on SQLAlchemy Index objects
+    (they caused crashes on some SQLAlchemy versions). Instead we use
+    `CREATE ... IF NOT EXISTS` in raw SQL, which Postgres supports.
+    """
+
+    ddl = [
+        # users
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            telegram_id BIGINT PRIMARY KEY,
+            username VARCHAR(64),
+            first_name VARCHAR(128),
+            last_name VARCHAR(128),
+            language VARCHAR(8),
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        """,
+        # investor_profiles
+        """
+        CREATE TABLE IF NOT EXISTS investor_profiles (
+            telegram_id BIGINT PRIMARY KEY,
+            status VARCHAR(32) NOT NULL DEFAULT 'pending',
+            risk_ack BOOLEAN NOT NULL DEFAULT FALSE,
+            bnb_address VARCHAR(64),
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ
+        );
+        """,
+        # wallets
+        """
+        CREATE TABLE IF NOT EXISTS wallets (
+            id SERIAL PRIMARY KEY,
+            telegram_id BIGINT NOT NULL,
+            wallet_type VARCHAR(16) NOT NULL DEFAULT 'base',
+            deposits_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            withdrawals_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        """,
+        # ledger_entries
+        """
+        CREATE TABLE IF NOT EXISTS ledger_entries (
+            id SERIAL PRIMARY KEY,
+            telegram_id BIGINT NOT NULL,
+            wallet_type VARCHAR(16) NOT NULL DEFAULT 'base',
+            direction VARCHAR(16) NOT NULL,
+            amount NUMERIC(24,8) NOT NULL,
+            currency VARCHAR(16) NOT NULL DEFAULT 'ILS',
+            reason VARCHAR(64) NOT NULL DEFAULT 'manual',
+            meta TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        """,
+        # transactions (optional audit)
+        """
+        CREATE TABLE IF NOT EXISTS transactions (
+            id SERIAL PRIMARY KEY,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            telegram_id BIGINT NOT NULL,
+            currency VARCHAR(16) NOT NULL DEFAULT 'SLHA',
+            amount NUMERIC(24,8) NOT NULL DEFAULT 0,
+            tx_type VARCHAR(64) NOT NULL,
+            reference VARCHAR(128),
+            note TEXT
+        );
+        """,
+        # internal_transfers (stage 2 SLHA)
+        """
+        CREATE TABLE IF NOT EXISTS internal_transfers (
+            id SERIAL PRIMARY KEY,
+            from_telegram_id BIGINT NOT NULL,
+            to_telegram_id BIGINT NOT NULL,
+            currency VARCHAR(16) NOT NULL DEFAULT 'SLHA',
+            amount NUMERIC(24,8) NOT NULL,
+            note TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        """,
+        # indexes (IF NOT EXISTS)
+        """CREATE INDEX IF NOT EXISTS ix_users_telegram_id ON users (telegram_id);""",
+        """CREATE INDEX IF NOT EXISTS ix_investor_profiles_telegram_id ON investor_profiles (telegram_id);""",
+        """CREATE INDEX IF NOT EXISTS ix_investor_profiles_status ON investor_profiles (status);""",
+        """CREATE INDEX IF NOT EXISTS ix_wallets_tid ON wallets (telegram_id);""",
+        """CREATE INDEX IF NOT EXISTS ix_wallets_tid_type ON wallets (telegram_id, wallet_type);""",
+        """CREATE INDEX IF NOT EXISTS ix_ledger_entries_tid ON ledger_entries (telegram_id);""",
+        """CREATE INDEX IF NOT EXISTS ix_ledger_entries_wallet_type ON ledger_entries (wallet_type);""",
+        """CREATE INDEX IF NOT EXISTS ix_ledger_entries_currency ON ledger_entries (currency);""",
+        """CREATE INDEX IF NOT EXISTS ix_internal_transfers_from ON internal_transfers (from_telegram_id);""",
+        """CREATE INDEX IF NOT EXISTS ix_internal_transfers_to ON internal_transfers (to_telegram_id);""",
+        """CREATE INDEX IF NOT EXISTS ix_transactions_tid ON transactions (telegram_id);""",
+    ]
+
+    with engine.begin() as conn:
+        for stmt in ddl:
+            conn.execute(text(stmt))
+
+
+def init_db() -> None:
+    engine = get_engine()
+
+    # Create missing tables/indexes without breaking existing ones
+    _ensure_schema(engine)
+
+    # Keep ORM metadata available for queries (no-op if schema exists)
+    # We DO NOT rely on create_all for indexes (it can create duplicates in some states).
+    try:
+        Base.metadata.create_all(bind=engine, checkfirst=True)
+    except Exception as e:
+        logger.warning("Base.metadata.create_all skipped/failed (non-fatal): %s", e)
