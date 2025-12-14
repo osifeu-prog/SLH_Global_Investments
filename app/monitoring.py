@@ -22,12 +22,10 @@ def _check(name: str, ok: bool, detail: str = "", extra: Dict[str, Any] | None =
 def run_selftest(quick: bool = True) -> dict:
     checks: List[Dict[str, Any]] = []
 
-    # --- ENV sanity ---
     checks.append(_check("env:DATABASE_URL", bool(getattr(settings, "DATABASE_URL", None))))
     checks.append(_check("env:BOT_TOKEN", bool(settings.BOT_TOKEN), detail="optional (bot disabled if missing)"))
     checks.append(_check("env:WEBHOOK_URL", bool(settings.WEBHOOK_URL), detail="optional (webhook auto-set if provided)"))
 
-    # --- DB ---
     db_ok = False
     db_err = ""
     t0 = time.time()
@@ -43,9 +41,7 @@ def run_selftest(quick: bool = True) -> dict:
 
     checks.append(_check("db:select1", db_ok, detail=db_err, extra={"ms": int((time.time() - t0) * 1000)}))
 
-    # --- Optional deeper checks (non-blocking for quick) ---
     if not quick:
-        # BSC RPC (best-effort)
         bsc_ok = True
         bsc_err = "skipped (BSC_RPC_URL missing)"
         if settings.BSC_RPC_URL:
