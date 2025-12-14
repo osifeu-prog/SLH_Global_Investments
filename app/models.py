@@ -69,8 +69,8 @@ class InvestorProfile(Base):
     note = Column(Text, nullable=True)
 
     __table_args__ = (
-        Index("ix_investor_profiles_status", "status"),
-        Index("ix_investor_profiles_telegram_id", "telegram_id"),
+        Index("ix_investor_profiles_status", "status", postgresql_if_not_exists=True),
+        Index("ix_investor_profiles_telegram_id", "telegram_id", postgresql_if_not_exists=True),
     )
 
 
