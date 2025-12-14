@@ -1,130 +1,102 @@
 # app/models.py
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from decimal import Decimal
+
 from sqlalchemy import (
     Column,
-    BigInteger,
-    String,
-    Numeric,
-    DateTime,
     Integer,
+    String,
     Boolean,
+    DateTime,
+    Numeric,
     Text,
-    Index,
 )
 from sqlalchemy.orm import declarative_base
-from sqlalchemy.sql import func
 
 Base = declarative_base()
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class User(Base):
     __tablename__ = "users"
 
-    telegram_id = Column(BigInteger, primary_key=True, index=True)
-    username = Column(String(64), nullable=True)
-    first_name = Column(String(128), nullable=True)
-    last_name = Column(String(128), nullable=True)
-    language = Column(String(8), nullable=True, default="he")
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(Integer, unique=True, index=True, nullable=False)
+    username = Column(String(128), nullable=True)
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
+    bnb_address = Column(String(128), nullable=True)
 
+    # SLH פנימי (אם תרצה בהמשך)
+    balance_slh = Column(Numeric(36, 18), nullable=False, default=Decimal("0"))
 
-class InvestorProfile(Base):
-    __tablename__ = "investor_profiles"
+    # SLHA נקודות
+    slha_balance = Column(Numeric(36, 18), nullable=False, default=Decimal("0"))
 
-    telegram_id = Column(BigInteger, primary_key=True, index=True)
-
-    # pending / candidate / active / blocked
-    status = Column(String(32), nullable=False, default="pending")
-
-    risk_ack = Column(Boolean, nullable=False, default=False)
-
-    # BSC address (0x...)
-    bnb_address = Column(String(64), nullable=True)
-
-    # last seen / audit
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
 
 class Wallet(Base):
     __tablename__ = "wallets"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(Integer, index=True, nullable=False)
 
-    telegram_id = Column(BigInteger, index=True, nullable=False)
-    wallet_type = Column(String(16), nullable=False, default="base")  # base / investor
+    wallet_type = Column(String(32), index=True, nullable=False)  # base / investor וכו'
+    kind = Column(String(32), nullable=False, default="base")
+
     deposits_enabled = Column(Boolean, nullable=False, default=True)
     withdrawals_enabled = Column(Boolean, nullable=False, default=False)
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
-
-    __table_args__ = (
-        Index("ix_wallets_tid_type", "telegram_id", "wallet_type"),
-    )
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
 
-class Transaction(Base):
-    __tablename__ = "transactions"
+class InvestorProfile(Base):
+    __tablename__ = "investor_profiles"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(Integer, unique=True, index=True, nullable=False)
 
-    # Keep it flexible: internal ledger events, on-chain txs, admin actions, etc.
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
+    status = Column(String(32), index=True, nullable=False, default="candidate")  # candidate/active/rejected
+    risk_ack = Column(Boolean, nullable=True, default=False)
 
-    telegram_id = Column(BigInteger, index=True, nullable=False)
-    currency = Column(String(16), nullable=False, default="SLHA")  # SLH / SLHA / TON / USDT_TON וכו'
-    amount = Column(Numeric(24, 8), nullable=False, default=0)
-
-    tx_type = Column(String(64), nullable=False)  # admin_credit / referral / transfer / ...
-    reference = Column(String(128), nullable=True)  # external tx hash / request id / etc.
+    referrer_tid = Column(Integer, nullable=True)
     note = Column(Text, nullable=True)
+
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class Referral(Base):
+    __tablename__ = "referrals"
+
+    id = Column(Integer, primary_key=True)
+    referrer_tid = Column(Integer, index=True, nullable=False)
+    referred_tid = Column(Integer, index=True, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
 
 class LedgerEntry(Base):
     __tablename__ = "ledger_entries"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(Integer, primary_key=True)
 
-    telegram_id = Column(BigInteger, index=True, nullable=False)
+    telegram_id = Column(Integer, index=True, nullable=False)
+    wallet_type = Column(String(32), index=True, nullable=False)  # investor / slha וכו'
+    direction = Column(String(8), index=True, nullable=False)     # in / out
 
-    wallet_type = Column(String(16), nullable=False, default="base")  # base / investor
-    direction = Column(String(16), nullable=False)  # in / out
-    amount = Column(Numeric(24, 8), nullable=False)
-    currency = Column(String(16), nullable=False, default="ILS")  # ILS / SLH / SLHA / USDT_TON וכו'
-    reason = Column(String(64), nullable=False, default="manual")
+    amount = Column(Numeric(36, 18), nullable=False, default=Decimal("0"))
+    currency = Column(String(32), index=True, nullable=False)     # SLHA / USDT_TON / TON וכו'
+
+    reason = Column(String(64), index=True, nullable=False, default="manual")
     meta = Column(Text, nullable=True)
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
-
-    __table_args__ = (
-        Index("ix_ledger_entries_tid", "telegram_id"),
-        Index("ix_ledger_entries_wallet_type", "wallet_type"),
-        Index("ix_ledger_entries_currency", "currency"),
-    )
-
-
-class InternalTransfer(Base):
-    """Audit table for SLHA (internal points) transfers between users.
-
-    Note: this is OFF-CHAIN only. No on-chain move is performed.
-    """
-
-    __tablename__ = "internal_transfers"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    from_telegram_id = Column(BigInteger, index=True, nullable=False)
-    to_telegram_id = Column(BigInteger, index=True, nullable=False)
-
-    currency = Column(String(16), nullable=False, default="SLHA")
-    amount = Column(Numeric(24, 8), nullable=False)
-
-    note = Column(Text, nullable=True)
-
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
-
-    __table_args__ = (
-        Index("ix_internal_transfers_from", "from_telegram_id"),
-        Index("ix_internal_transfers_to", "to_telegram_id"),
-    )
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
