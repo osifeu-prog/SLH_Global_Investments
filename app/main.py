@@ -10,6 +10,7 @@ from app.database import init_db
 from app.bot.investor_wallet_bot import initialize_bot, process_webhook
 from app.monitoring import run_selftest
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="SLH Investor Gateway")
@@ -21,13 +22,13 @@ async def startup_event():
         init_db()
         logger.info("DB initialized")
     except Exception:
-        logger.exception("DB init failed (startup). Continuing to boot app.")
+        logger.exception("DB init failed (startup). App will still boot, but DB features may be broken.")
 
     try:
         await initialize_bot()
         logger.info("Bot initialized")
     except Exception:
-        logger.exception("Bot init failed (startup). Continuing to boot app.")
+        logger.exception("Bot init failed (startup). App will still boot, but Telegram features may be broken.")
 
 
 @app.get("/")
@@ -42,6 +43,7 @@ async def health():
 
 @app.get("/ready")
 async def ready():
+    # ready = health + deeper checks
     result = run_selftest(quick=True)
     return {"status": result.get("status", "unknown"), "checks": result.get("checks", [])}
 
@@ -53,10 +55,7 @@ async def selftest():
 
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
-    """
-    Telegram expects fast 200 responses.
-    Even if we hit internal exception, we return 200 to avoid retry-storm.
-    """
+    # Telegram expects fast 200
     try:
         update_dict = await request.json()
     except Exception:
