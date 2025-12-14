@@ -1,99 +1,100 @@
 # app/models.py
 from __future__ import annotations
 
+from datetime import datetime
+from decimal import Decimal
+
 from sqlalchemy import (
-    Column,
     BigInteger,
-    String,
-    Numeric,
+    Boolean,
+    Column,
     DateTime,
     Integer,
-    Boolean,
+    Numeric,
+    String,
     Text,
+    Index,
+    func,
 )
-from sqlalchemy.sql import func
+from sqlalchemy.orm import declarative_base
 
-from app.database import Base
+Base = declarative_base()
 
 
 class User(Base):
     __tablename__ = "users"
 
-    telegram_id = Column(BigInteger, primary_key=True, index=True, autoincrement=False)
-    username = Column(String(255), index=True, nullable=True)
-    bnb_address = Column(String(255), nullable=True)
+    telegram_id = Column(BigInteger, primary_key=True, index=True)
+    username = Column(String(64), nullable=True)
 
-    balance_slh = Column(Numeric(24, 6), nullable=False, default=0)
-    slha_balance = Column(Numeric(24, 8), nullable=False, default=0)
+    # internal balances (user-level)
+    balance_slh = Column(Numeric(24, 6), nullable=False, default=Decimal("0"))
+    slha_balance = Column(Numeric(24, 8), nullable=False, default=Decimal("0"))
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    # optional onchain address
+    bnb_address = Column(String(128), nullable=True)
 
-
-class Transaction(Base):
-    __tablename__ = "transactions"
-
-    id = Column(Integer, primary_key=True, index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    from_user = Column(BigInteger, nullable=True)
-    to_user = Column(BigInteger, nullable=True)
-
-    amount_slh = Column(Numeric(24, 6), nullable=False)
-    tx_type = Column(String(50), nullable=False)
-
-
-class InvestorProfile(Base):
-    __tablename__ = "investor_profiles"
-
-    # ב-DB אצלך מוגדר SEQ כברירת מחדל, אבל אנחנו עדיין מכניסים את ה-Telegram ID בפועל.
-    telegram_id = Column(BigInteger, primary_key=True, index=True, autoincrement=False)
-
-    # ב-DB: NOT NULL בלי DEFAULT => חובה לספק תמיד בקוד
-    status = Column(String(32), nullable=False)
-
-    # ב-DB: NOT NULL DEFAULT false
-    risk_ack = Column(Boolean, nullable=False, default=False)
-
-    # אופציונלי
-    referrer_tid = Column(BigInteger, nullable=True)
-    approved_at = Column(DateTime(timezone=True), nullable=True)
-
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    note = Column(Text, nullable=True)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True)
 
 
 class Wallet(Base):
     __tablename__ = "wallets"
 
     id = Column(Integer, primary_key=True, index=True)
-    telegram_id = Column(BigInteger, index=True, nullable=False)
+    telegram_id = Column(BigInteger, nullable=False, index=True)
 
-    # ב-DB: NOT NULL בלי DEFAULT => חובה בקוד
+    # IMPORTANT: DB says varchar(16) NOT NULL
     wallet_type = Column(String(16), nullable=False)
 
-    # ב-DB: NOT NULL בלי DEFAULT => חובה בקוד
-    is_active = Column(Boolean, nullable=False)
+    # IMPORTANT: DB says NOT NULL (no default in your table output)
+    is_active = Column(Boolean, nullable=False, default=True)
 
-    # ב-DB: NOT NULL בלי DEFAULT => חובה בקוד
-    balance_slh = Column(Numeric(24, 6), nullable=False)
-    balance_slha = Column(Numeric(24, 8), nullable=False)
+    # IMPORTANT: DB says NOT NULL, numeric(24,6)
+    balance_slh = Column(Numeric(24, 6), nullable=False, default=Decimal("0"))
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    # IMPORTANT: DB says NOT NULL, numeric(24,8)
+    balance_slha = Column(Numeric(24, 8), nullable=False, default=Decimal("0"))
 
-    # אצלך קיימים גם אלה:
-    kind = Column(String(50), nullable=False, default="base")
-    deposits_enabled = Column(Boolean, nullable=False, default=True)
-    withdrawals_enabled = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True)
+
+    # other columns you have
+    kind = Column(String(50), nullable=False, server_default="base")
+    deposits_enabled = Column(Boolean, nullable=False, server_default="true")
+    withdrawals_enabled = Column(Boolean, nullable=False, server_default="false")
+
+
+class InvestorProfile(Base):
+    __tablename__ = "investor_profiles"
+
+    telegram_id = Column(BigInteger, primary_key=True, index=True)
+
+    status = Column(String(32), nullable=False)  # no DB default
+    risk_ack = Column(Boolean, nullable=False, server_default="false")
+
+    referrer_tid = Column(BigInteger, nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
+    note = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True)
+
+    __table_args__ = (
+        Index("ix_investor_profiles_status", "status"),
+        Index("ix_investor_profiles_telegram_id", "telegram_id"),
+    )
 
 
 class Referral(Base):
     __tablename__ = "referrals"
 
-    id = Column(Integer, primary_key=True, index=True)
-    referrer_tid = Column(BigInteger, index=True, nullable=False)
-    referred_tid = Column(BigInteger, index=True, nullable=False)
+    id = Column(Integer, primary_key=True)
+    referrer_tid = Column(BigInteger, nullable=False, index=True)
+    referred_tid = Column(BigInteger, nullable=False, index=True)
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
+
+    __table_args__ = (
+        Index("ix_referrals_referrer_referred", "referrer_tid", "referred_tid", unique=True),
+    )
