@@ -1,22 +1,19 @@
 # app/models.py
 from __future__ import annotations
 
-from datetime import datetime
-from decimal import Decimal
-
 from sqlalchemy import (
-    BigInteger,
-    Boolean,
     Column,
+    BigInteger,
+    String,
+    Numeric,
     DateTime,
     Integer,
-    Numeric,
-    String,
+    Boolean,
     Text,
     Index,
-    func,
 )
 from sqlalchemy.orm import declarative_base
+from sqlalchemy.sql import func
 
 Base = declarative_base()
 
@@ -25,44 +22,31 @@ class User(Base):
     __tablename__ = "users"
 
     telegram_id = Column(BigInteger, primary_key=True, index=True)
-    username = Column(String(64), nullable=True)
+    username = Column(String(255), index=True, nullable=True)
+    bnb_address = Column(String(255), nullable=True)
 
-    # internal balances (user-level)
-    balance_slh = Column(Numeric(24, 6), nullable=False, default=Decimal("0"))
-    slha_balance = Column(Numeric(24, 8), nullable=False, default=Decimal("0"))
+    balance_slh = Column(Numeric(24, 6), nullable=False, default=0)
+    slha_balance = Column(Numeric(24, 8), nullable=False, default=0)
 
-    # optional onchain address
-    bnb_address = Column(String(128), nullable=True)
+    # קיימים אצלך ב-DB
+    role = Column(String(64), nullable=False, default="user")
+    investor_status = Column(String(64), nullable=False, default="none")
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
 
 
-class Wallet(Base):
-    __tablename__ = "wallets"
+class Transaction(Base):
+    __tablename__ = "transactions"
 
     id = Column(Integer, primary_key=True, index=True)
-    telegram_id = Column(BigInteger, nullable=False, index=True)
-
-    # IMPORTANT: DB says varchar(16) NOT NULL
-    wallet_type = Column(String(16), nullable=False)
-
-    # IMPORTANT: DB says NOT NULL (no default in your table output)
-    is_active = Column(Boolean, nullable=False, default=True)
-
-    # IMPORTANT: DB says NOT NULL, numeric(24,6)
-    balance_slh = Column(Numeric(24, 6), nullable=False, default=Decimal("0"))
-
-    # IMPORTANT: DB says NOT NULL, numeric(24,8)
-    balance_slha = Column(Numeric(24, 8), nullable=False, default=Decimal("0"))
-
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True)
 
-    # other columns you have
-    kind = Column(String(50), nullable=False, server_default="base")
-    deposits_enabled = Column(Boolean, nullable=False, server_default="true")
-    withdrawals_enabled = Column(Boolean, nullable=False, server_default="false")
+    from_user = Column(BigInteger, nullable=True)
+    to_user = Column(BigInteger, nullable=True)
+
+    amount_slh = Column(Numeric(24, 6), nullable=False)
+    tx_type = Column(String(50), nullable=False)
 
 
 class InvestorProfile(Base):
@@ -70,15 +54,19 @@ class InvestorProfile(Base):
 
     telegram_id = Column(BigInteger, primary_key=True, index=True)
 
-    status = Column(String(32), nullable=False)  # no DB default
-    risk_ack = Column(Boolean, nullable=False, server_default="false")
+    # אצלך: status VARCHAR(32) NOT NULL
+    status = Column(String(32), nullable=False, default="pending")
+
+    # אצלך: risk_ack boolean NOT NULL DEFAULT false
+    risk_ack = Column(Boolean, nullable=False, default=False)
 
     referrer_tid = Column(BigInteger, nullable=True)
     approved_at = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
+
     note = Column(Text, nullable=True)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True)
 
     __table_args__ = (
         Index("ix_investor_profiles_status", "status"),
@@ -86,15 +74,60 @@ class InvestorProfile(Base):
     )
 
 
+class Wallet(Base):
+    __tablename__ = "wallets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    telegram_id = Column(BigInteger, index=True, nullable=False)
+
+    # אצלך: wallet_type VARCHAR(16) NOT NULL
+    wallet_type = Column(String(16), nullable=False, default="base")
+
+    # אצלך: is_active boolean NOT NULL
+    is_active = Column(Boolean, nullable=False, default=True)
+
+    # אצלך: balance_slh / balance_slha NOT NULL
+    balance_slh = Column(Numeric(24, 6), nullable=False, default=0)
+    balance_slha = Column(Numeric(24, 8), nullable=False, default=0)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
+
+    # תואם אצלך (קיים)
+    kind = Column(String(50), nullable=False, default="base")
+    deposits_enabled = Column(Boolean, nullable=False, default=True)
+    withdrawals_enabled = Column(Boolean, nullable=False, default=False)
+
+
 class Referral(Base):
     __tablename__ = "referrals"
 
-    id = Column(Integer, primary_key=True)
-    referrer_tid = Column(BigInteger, nullable=False, index=True)
-    referred_tid = Column(BigInteger, nullable=False, index=True)
+    id = Column(Integer, primary_key=True, index=True)
+    referrer_tid = Column(BigInteger, index=True, nullable=False)
+    referred_tid = Column(BigInteger, index=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
+
+
+class LedgerEntry(Base):
+    """
+    Ledger בסיסי – זה הבסיס ל"כסף אמיתי".
+    במקום לשנות balance ישירות, כותבים ledger ואז מציגים סכומים לפי סכימת Entries.
+    """
+    __tablename__ = "ledger_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    telegram_id = Column(BigInteger, index=True, nullable=False)
+
+    wallet_type = Column(String(16), nullable=False, default="base")  # base / investor
+    direction = Column(String(16), nullable=False)  # in / out
+    amount = Column(Numeric(24, 8), nullable=False)
+    currency = Column(String(16), nullable=False, default="ILS")  # ILS / SLH / USDT וכו'
+    reason = Column(String(64), nullable=False, default="manual")
+    meta = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
 
     __table_args__ = (
-        Index("ix_referrals_referrer_referred", "referrer_tid", "referred_tid", unique=True),
+        Index("ix_ledger_entries_tid", "telegram_id"),
+        Index("ix_ledger_entries_wallet_type", "wallet_type"),
     )
