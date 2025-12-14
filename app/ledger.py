@@ -23,8 +23,7 @@ def _to_decimal(x) -> Decimal:
 
 
 def _canonical_json(meta: Dict[str, Any]) -> str:
-    # Canonical JSON so substring markers are stable across writes.
-    # No spaces + deterministic key order.
+    # Deterministic JSON so substring marker queries are stable.
     return json.dumps(meta, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
@@ -119,7 +118,6 @@ def has_interest_for_day(
     currency: str,
     day: date,
 ) -> bool:
-    # idempotency based on canonical meta: {"accrual_date":"YYYY-MM-DD",...}
     marker = f'"accrual_date":"{day.isoformat()}"'
     row = (
         db.query(models.LedgerEntry.id)
