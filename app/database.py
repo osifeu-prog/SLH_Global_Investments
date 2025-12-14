@@ -1,11 +1,16 @@
 # app/database.py
 from __future__ import annotations
 
+import logging
+from urllib.parse import urlparse
+
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
-from app.models import Base  # Base מיובא מ-models (כמו שביקשת)
+from app.models import Base
+
+logger = logging.getLogger(__name__)
 
 engine = create_engine(
     settings.DATABASE_URL,
@@ -21,45 +26,22 @@ SessionLocal = sessionmaker(
 )
 
 
-def _ensure_schema():
+def _log_db_target():
+    try:
+        u = urlparse(settings.DATABASE_URL)
+        # לא מדפיסים סיסמה
+        logger.info("DB target: scheme=%s host=%s port=%s db=%s", u.scheme, u.hostname, u.port, (u.path or "").lstrip("/"))
+    except Exception:
+        logger.info("DB target: <parse failed>")
+
+
+def _ensure_extras():
     """
-    Soft-migration: מוסיף עמודות וטבלאות בצורה בטוחה ומהירה.
-    מאפשר להתקדם בלי Alembic בשלב הזה.
+    דברים "אקסטרה" שאינם תלויים במודלים (או שתרצה להבטיח גם אם מישהו מחק בטעות).
+    ב-DB חדש: create_all ייצור את הטבלאות מהמודלים.
     """
     statements: list[str] = [
-        # --- users ---
-        "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS slha_balance NUMERIC(24, 8) NOT NULL DEFAULT 0;",
-        "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS role VARCHAR(64) NOT NULL DEFAULT 'user';",
-        "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS investor_status VARCHAR(64) NOT NULL DEFAULT 'none';",
-        "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();",
-        "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();",
-
-        # --- investor_profiles ---
-        "ALTER TABLE IF EXISTS investor_profiles ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'pending';",
-        "ALTER TABLE IF EXISTS investor_profiles ADD COLUMN IF NOT EXISTS risk_ack BOOLEAN NOT NULL DEFAULT false;",
-        "ALTER TABLE IF EXISTS investor_profiles ADD COLUMN IF NOT EXISTS referrer_tid BIGINT;",
-        "ALTER TABLE IF EXISTS investor_profiles ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;",
-        "ALTER TABLE IF EXISTS investor_profiles ADD COLUMN IF NOT EXISTS note TEXT;",
-        "ALTER TABLE IF EXISTS investor_profiles ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();",
-        "ALTER TABLE IF EXISTS investor_profiles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();",
-
-        # --- wallets ---
-        "ALTER TABLE IF EXISTS wallets ADD COLUMN IF NOT EXISTS wallet_type VARCHAR(16) NOT NULL DEFAULT 'base';",
-        "ALTER TABLE IF EXISTS wallets ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;",
-        "ALTER TABLE IF EXISTS wallets ADD COLUMN IF NOT EXISTS balance_slh NUMERIC(24, 6) NOT NULL DEFAULT 0;",
-        "ALTER TABLE IF EXISTS wallets ADD COLUMN IF NOT EXISTS balance_slha NUMERIC(24, 8) NOT NULL DEFAULT 0;",
-        "ALTER TABLE IF EXISTS wallets ADD COLUMN IF NOT EXISTS kind VARCHAR(50) NOT NULL DEFAULT 'base';",
-        "ALTER TABLE IF EXISTS wallets ADD COLUMN IF NOT EXISTS deposits_enabled BOOLEAN NOT NULL DEFAULT TRUE;",
-        "ALTER TABLE IF EXISTS wallets ADD COLUMN IF NOT EXISTS withdrawals_enabled BOOLEAN NOT NULL DEFAULT FALSE;",
-        "ALTER TABLE IF EXISTS wallets ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();",
-        "ALTER TABLE IF EXISTS wallets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();",
-
-        # --- referrals ---
-        "ALTER TABLE IF EXISTS referrals ADD COLUMN IF NOT EXISTS referrer_tid BIGINT;",
-        "ALTER TABLE IF EXISTS referrals ADD COLUMN IF NOT EXISTS referred_tid BIGINT;",
-        "ALTER TABLE IF EXISTS referrals ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();",
-
-        # --- ledger_entries (חדש) ---
+        # ledger_entries: אם תרצה להשאיר אותו מנוהל במודלים בלבד — אפשר למחוק את הבלוק הזה.
         """
         CREATE TABLE IF NOT EXISTS ledger_entries (
           id SERIAL PRIMARY KEY,
@@ -84,14 +66,23 @@ def _ensure_schema():
 
 def init_db():
     """
-    1) create_all: יוצר טבלאות שחסרות (לפי models)
-    2) soft-migration: מוסיף עמודות שחסרות בטבלאות קיימות
+    DB חדש: create_all חייב ליצור את כל הטבלאות.
+    אם זה נכשל — נדע בלוגים.
     """
-    # חשוב: import models כדי לרשום metadata
+    _log_db_target()
+
+    # לוודא שהמודלים נטענים ומרשמים ל-metadata
     import app.models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
-    _ensure_schema()
+    _ensure_extras()
+
+    # sanity check: האם יש טבלאות בכלל?
+    with engine.begin() as conn:
+        n = conn.execute(
+            text("SELECT count(*) FROM information_schema.tables WHERE table_schema='public';")
+        ).scalar_one()
+        logger.info("DB sanity: public tables=%s", n)
 
 
 def get_db():
