@@ -68,12 +68,7 @@ class InvestorProfile(Base):
 
     note = Column(Text, nullable=True)
 
-    __table_args__ = (
-        Index("ix_investor_profiles_status", "status", postgresql_if_not_exists=True),
-        Index("ix_investor_profiles_telegram_id", "telegram_id", postgresql_if_not_exists=True),
-    )
-
-
+    __table_args__ = ()
 class Wallet(Base):
     __tablename__ = "wallets"
 
@@ -127,7 +122,4 @@ class LedgerEntry(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=True)
 
-    __table_args__ = (
-        Index("ix_ledger_entries_tid", "telegram_id"),
-        Index("ix_ledger_entries_wallet_type", "wallet_type"),
-    )
+    __table_args__ = ()

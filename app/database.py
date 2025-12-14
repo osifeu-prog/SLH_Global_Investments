@@ -159,19 +159,23 @@ def _ensure_schema():
 
 def init_db():
     """
-    1) create_all לפי models (אופציונלי)
-    2) bootstrap + soft migration (חובה) כדי לתמוך גם ב-DB ריק
+    Bootstrap schema in a safe, idempotent way.
+
+    ⚠️ We avoid `Base.metadata.create_all()` in production because it may attempt
+    to (re)create indexes and fail with "already exists" across redeploys.
+    All schema bootstrapping is handled in `_ensure_schema()` using IF NOT EXISTS.
     """
+    # Ensure models are importable (register Base mappings)
     try:
         import app.models  # noqa: F401
-        Base.metadata.create_all(bind=engine)
     except Exception:
-        logger.exception("Base.metadata.create_all failed (continuing with bootstrap)")
+        logger.exception("Import app.models failed")
 
     _ensure_schema()
 
 
 def get_db():
+():
     db = SessionLocal()
     try:
         yield db
