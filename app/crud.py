@@ -5,20 +5,19 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app import models
 
 
-def _utcnow():
+def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# --------------------
-# Users
-# --------------------
-def get_or_create_user(db: Session, telegram_id: int, username: Optional[str] = None) -> models.User:
+# -------- Users --------
+
+def get_or_create_user(db: Session, telegram_id: int, username: str | None = None) -> models.User:
     user = db.query(models.User).filter(models.User.telegram_id == telegram_id).first()
     if user:
         if username is not None and user.username != username:
@@ -33,6 +32,8 @@ def get_or_create_user(db: Session, telegram_id: int, username: Optional[str] = 
         username=username,
         balance_slh=Decimal("0"),
         slha_balance=Decimal("0"),
+        role="user",
+        investor_status="none",
     )
     db.add(user)
     db.commit()
@@ -40,10 +41,17 @@ def get_or_create_user(db: Session, telegram_id: int, username: Optional[str] = 
     return user
 
 
-# --------------------
-# Wallets
-# --------------------
-def get_wallet(db: Session, telegram_id: int, wallet_type: str) -> Optional[models.Wallet]:
+def set_bnb_address(db: Session, user: models.User, addr: str) -> models.User:
+    user.bnb_address = addr
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+# -------- Wallets --------
+
+def get_wallet(db: Session, telegram_id: int, wallet_type: str) -> models.Wallet | None:
     return (
         db.query(models.Wallet)
         .filter(models.Wallet.telegram_id == telegram_id, models.Wallet.wallet_type == wallet_type)
@@ -60,29 +68,18 @@ def get_or_create_wallet(
     deposits_enabled: bool = True,
     withdrawals_enabled: bool = False,
 ) -> models.Wallet:
-    """
-    CRITICAL:
-    Your DB requires NOT NULL:
-      wallet_type, is_active, balance_slh, balance_slha
-    If any of those are missing/None -> Postgres will crash inserts.
-    """
     w = get_wallet(db, telegram_id, wallet_type)
     if w:
-        # keep aligned
+        # align toggles safely
         w.kind = kind
         w.deposits_enabled = bool(deposits_enabled)
         w.withdrawals_enabled = bool(withdrawals_enabled)
-
-        # heal broken rows defensively
-        if w.wallet_type is None:
-            w.wallet_type = wallet_type
         if w.is_active is None:
             w.is_active = True
         if w.balance_slh is None:
             w.balance_slh = Decimal("0")
         if w.balance_slha is None:
             w.balance_slha = Decimal("0")
-
         db.add(w)
         db.commit()
         db.refresh(w)
@@ -90,34 +87,23 @@ def get_or_create_wallet(
 
     w = models.Wallet(
         telegram_id=telegram_id,
-        wallet_type=wallet_type,          # MUST NOT NULL
-        is_active=True,                   # MUST NOT NULL
-        balance_slh=Decimal("0"),         # MUST NOT NULL
-        balance_slha=Decimal("0"),        # MUST NOT NULL
+        wallet_type=wallet_type,        # NOT NULL
+        is_active=True,                 # NOT NULL
+        balance_slh=Decimal("0"),       # NOT NULL
+        balance_slha=Decimal("0"),      # NOT NULL
         kind=kind,
         deposits_enabled=bool(deposits_enabled),
         withdrawals_enabled=bool(withdrawals_enabled),
     )
-
     db.add(w)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        # If raced, read again
-        existing = get_wallet(db, telegram_id, wallet_type)
-        if existing:
-            return existing
-        raise
-
+    db.commit()
     db.refresh(w)
     return w
 
 
-# --------------------
-# Investor Profiles
-# --------------------
-def get_investor_profile(db: Session, telegram_id: int) -> Optional[models.InvestorProfile]:
+# -------- Investor Profiles --------
+
+def get_investor_profile(db: Session, telegram_id: int) -> models.InvestorProfile | None:
     return (
         db.query(models.InvestorProfile)
         .filter(models.InvestorProfile.telegram_id == telegram_id)
@@ -136,11 +122,10 @@ def start_invest_onboarding(
     db: Session,
     telegram_id: int,
     *,
-    referrer_tid: Optional[int] = None,
-    note: Optional[str] = None,
+    referrer_tid: int | None = None,
+    note: str | None = None,
 ) -> models.InvestorProfile:
     prof = get_investor_profile(db, telegram_id)
-
     if prof:
         prof.status = "candidate"
         if prof.risk_ack is None:
@@ -149,25 +134,22 @@ def start_invest_onboarding(
             prof.referrer_tid = referrer_tid
         if note is not None:
             prof.note = note
-        prof.updated_at = _utcnow()
         db.add(prof)
         db.commit()
         db.refresh(prof)
     else:
         prof = models.InvestorProfile(
             telegram_id=telegram_id,
-            status="candidate",   # REQUIRED
-            risk_ack=False,       # REQUIRED
+            status="candidate",
+            risk_ack=False,
             referrer_tid=referrer_tid,
             note=note,
-            created_at=_utcnow(),
-            updated_at=_utcnow(),
         )
         db.add(prof)
         db.commit()
         db.refresh(prof)
 
-    # create investor wallet (deposits only)
+    # ensure investor wallet exists (deposits only)
     get_or_create_wallet(
         db,
         telegram_id=telegram_id,
@@ -176,7 +158,6 @@ def start_invest_onboarding(
         deposits_enabled=True,
         withdrawals_enabled=False,
     )
-
     return prof
 
 
@@ -189,20 +170,19 @@ def approve_investor(db: Session, telegram_id: int) -> models.InvestorProfile:
     prof.approved_at = _utcnow()
     if prof.risk_ack is None:
         prof.risk_ack = False
-    prof.updated_at = _utcnow()
+
+    # update user flags (יש אצלך ב-DB)
+    u = get_or_create_user(db, telegram_id, None)
+    u.role = "investor"
+    u.investor_status = "approved"
 
     db.add(prof)
+    db.add(u)
     db.commit()
     db.refresh(prof)
 
-    get_or_create_wallet(
-        db,
-        telegram_id=telegram_id,
-        wallet_type="investor",
-        kind="investor",
-        deposits_enabled=True,
-        withdrawals_enabled=False,
-    )
+    # investor wallet stays deposits only unless you change policy
+    get_or_create_wallet(db, telegram_id, "investor", kind="investor", deposits_enabled=True, withdrawals_enabled=False)
     return prof
 
 
@@ -214,7 +194,6 @@ def reject_investor(db: Session, telegram_id: int) -> models.InvestorProfile:
     prof.status = "rejected"
     if prof.risk_ack is None:
         prof.risk_ack = False
-    prof.updated_at = _utcnow()
 
     db.add(prof)
     db.commit()
@@ -222,13 +201,15 @@ def reject_investor(db: Session, telegram_id: int) -> models.InvestorProfile:
     return prof
 
 
-# --------------------
-# Referrals
-# --------------------
+# -------- Referrals --------
+
+def count_referrals(db: Session, telegram_id: int) -> int:
+    return db.query(models.Referral).filter(models.Referral.referrer_tid == telegram_id).count()
+
+
 def apply_referral(db: Session, referrer_tid: int, referred_tid: int) -> bool:
     if referrer_tid == referred_tid:
         return False
-
     exists = (
         db.query(models.Referral)
         .filter(models.Referral.referrer_tid == referrer_tid, models.Referral.referred_tid == referred_tid)
@@ -236,16 +217,67 @@ def apply_referral(db: Session, referrer_tid: int, referred_tid: int) -> bool:
     )
     if exists:
         return False
-
-    row = models.Referral(referrer_tid=referrer_tid, referred_tid=referred_tid)
-    db.add(row)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        return False
+    db.add(models.Referral(referrer_tid=referrer_tid, referred_tid=referred_tid))
+    db.commit()
     return True
 
 
-def count_referrals(db: Session, telegram_id: int) -> int:
-    return db.query(models.Referral).filter(models.Referral.referrer_tid == telegram_id).count()
+# -------- Ledger (core) --------
+
+def ledger_add(
+    db: Session,
+    telegram_id: int,
+    *,
+    wallet_type: str,
+    direction: str,
+    amount: Decimal,
+    currency: str = "ILS",
+    reason: str = "manual",
+    meta: str | None = None,
+) -> models.LedgerEntry:
+    row = models.LedgerEntry(
+        telegram_id=telegram_id,
+        wallet_type=wallet_type,
+        direction=direction,
+        amount=Decimal(amount),
+        currency=currency,
+        reason=reason,
+        meta=meta,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def ledger_balance(
+    db: Session,
+    telegram_id: int,
+    *,
+    wallet_type: str,
+    currency: str = "ILS",
+) -> Decimal:
+    """
+    סכימה: IN - OUT
+    """
+    incoming = (
+        db.query(func.coalesce(func.sum(models.LedgerEntry.amount), 0))
+        .filter(
+            models.LedgerEntry.telegram_id == telegram_id,
+            models.LedgerEntry.wallet_type == wallet_type,
+            models.LedgerEntry.currency == currency,
+            models.LedgerEntry.direction == "in",
+        )
+        .scalar()
+    )
+    outgoing = (
+        db.query(func.coalesce(func.sum(models.LedgerEntry.amount), 0))
+        .filter(
+            models.LedgerEntry.telegram_id == telegram_id,
+            models.LedgerEntry.wallet_type == wallet_type,
+            models.LedgerEntry.currency == currency,
+            models.LedgerEntry.direction == "out",
+        )
+        .scalar()
+    )
+    return Decimal(str(incoming)) - Decimal(str(outgoing))
