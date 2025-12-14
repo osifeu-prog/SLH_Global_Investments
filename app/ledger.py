@@ -22,6 +22,12 @@ def _to_decimal(x) -> Decimal:
     return Decimal(str(x))
 
 
+def _canonical_json(meta: Dict[str, Any]) -> str:
+    # Canonical JSON so substring markers are stable across writes.
+    # No spaces + deterministic key order.
+    return json.dumps(meta, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def create_entry(
     db: Session,
     *,
@@ -48,7 +54,7 @@ def create_entry(
         amount=amt,
         currency=currency.upper().strip(),
         reason=reason.strip(),
-        meta=(json.dumps(meta, ensure_ascii=False) if meta else None),
+        meta=(_canonical_json(meta) if meta else None),
         created_at=_utcnow(),
     )
     db.add(row)
@@ -113,7 +119,7 @@ def has_interest_for_day(
     currency: str,
     day: date,
 ) -> bool:
-    # idempotency based on meta.accrual_date
+    # idempotency based on canonical meta: {"accrual_date":"YYYY-MM-DD",...}
     marker = f'"accrual_date":"{day.isoformat()}"'
     row = (
         db.query(models.LedgerEntry.id)
