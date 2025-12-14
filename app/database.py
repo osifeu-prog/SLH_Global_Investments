@@ -150,6 +150,38 @@ def _ensure_schema():
         "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS withdrawals_enabled BOOLEAN NOT NULL DEFAULT FALSE;",
         "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();",
         "ALTER TABLE wallets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();",
+        """
+        CREATE TABLE IF NOT EXISTS internal_transfers (
+          id SERIAL PRIMARY KEY,
+          from_telegram_id BIGINT NOT NULL,
+          to_telegram_id BIGINT NOT NULL,
+          amount NUMERIC(24,8) NOT NULL,
+          currency VARCHAR(16) NOT NULL DEFAULT 'SLHA',
+          reason VARCHAR(32) NOT NULL DEFAULT 'transfer',
+          meta TEXT,
+          created_at TIMESTAMPTZ DEFAULT now()
+        );
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_internal_transfers_from ON internal_transfers(from_telegram_id);",
+        "CREATE INDEX IF NOT EXISTS ix_internal_transfers_to ON internal_transfers(to_telegram_id);",
+
+        """
+        CREATE TABLE IF NOT EXISTS redemption_requests (
+          id SERIAL PRIMARY KEY,
+          telegram_id BIGINT NOT NULL,
+          amount_slha NUMERIC(24,8) NOT NULL,
+          cohort VARCHAR(32) NOT NULL DEFAULT 'standard',
+          policy VARCHAR(32) NOT NULL DEFAULT 'regular',
+          status VARCHAR(32) NOT NULL DEFAULT 'pending',
+          payout_address VARCHAR(128),
+          note TEXT,
+          meta TEXT,
+          created_at TIMESTAMPTZ DEFAULT now()
+        );
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_redemption_requests_tid ON redemption_requests(telegram_id);",
+        "CREATE INDEX IF NOT EXISTS ix_redemption_requests_status ON redemption_requests(status);",
+
     ]
 
     with engine.begin() as conn:

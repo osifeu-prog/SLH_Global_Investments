@@ -1,76 +1,64 @@
 <!doctype html>
 <html lang="he" dir="rtl">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>SLH Global Investments – שער המשקיעים</title>
   <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; margin:0; background:#0b1020; color:#eef2ff;}
-    .wrap{max-width:980px; margin:0 auto; padding:28px;}
-    .card{background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); border-radius:18px; padding:22px; box-shadow:0 10px 30px rgba(0,0,0,.35);}
-    .grid{display:grid; grid-template-columns:1fr; gap:16px;}
-    @media(min-width:900px){.grid{grid-template-columns:1.2fr .8fr;}}
-    h1{margin:0 0 10px; font-size:34px;}
-    h2{margin:0 0 10px; font-size:20px;}
-    p{line-height:1.7; margin:8px 0;}
-    .btns{display:flex; flex-wrap:wrap; gap:10px; margin-top:12px;}
-    a.btn{display:inline-block; padding:12px 14px; border-radius:12px; text-decoration:none; color:#0b1020; background:#a7f3d0; font-weight:700;}
-    a.ghost{background:transparent; color:#eef2ff; border:1px solid rgba(255,255,255,.2);}
-    .small{opacity:.85; font-size:13px;}
-    ul{margin:10px 0 0; padding:0 18px;}
-    li{margin:8px 0; line-height:1.6;}
-    .tag{display:inline-block; padding:6px 10px; border:1px solid rgba(255,255,255,.2); border-radius:999px; font-size:12px; opacity:.9;}
-    .row{display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; margin:0; background:#0b0f14; color:#e8eef5}
+    a{color:#7dd3fc; text-decoration:none}
+    .wrap{max-width:980px; margin:0 auto; padding:28px 18px 60px}
+    .card{background:#101826; border:1px solid #1f2a3a; border-radius:16px; padding:18px 18px; margin:14px 0; box-shadow:0 6px 22px rgba(0,0,0,.25)}
+    .btn{display:inline-block; padding:12px 14px; border-radius:12px; background:#1f2a3a; border:1px solid #2b3a51; margin:6px 6px 0 0}
+    .btn.primary{background:#0ea5e9; border-color:#0ea5e9; color:#001018}
+    h1{font-size:28px; margin:0 0 6px}
+    h2{font-size:18px; margin:0 0 10px}
+    .muted{color:#a9b6c7}
+    ul{margin:10px 0 0; padding:0 18px}
+    code{background:#0b1320; padding:2px 6px; border-radius:8px; border:1px solid #1f2a3a}
+    .grid{display:grid; gap:12px}
+    @media(min-width:900px){.grid{grid-template-columns:1.1fr .9fr}}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="row">
-      <span class="tag">On-Chain + Off-Chain Ledger</span>
-      <span class="tag">30 days program</span>
-      <span class="tag">SLHA internal points</span>
-    </div>
     <h1>SLH Global Investments</h1>
-    <p class="small">שער המשקיעים – כאן מרוכזים שני הדברים שהמשקיע צריך: הבוט בטלגרם + דף הסבר מסכם.</p>
+    <div class="muted">שער המשקיעים של אקו־סיסטם SLH • מידע ותפעול דרך בוט טלגרם + דפי מידע</div>
 
     <div class="grid">
       <div class="card">
-        <h2>כניסה לבוט בטלגרם</h2>
-        <p>
-          הבוט מציג נתונים בזמן אמת (פרופיל, סטטוס, יתרות חשבונאיות, היסטוריית תנועות, תוכנית חודשית).
-          בנוסף קיימות העברות פנימיות של נקודות SLHA ובקשות פדיון מבוקרות (אדמין).
-        </p>
-        <div class="btns">
-          <a class="btn" href="https://t.me/crypto_A_bot" target="_blank" rel="noopener">כניסה לבוט המשקיעים בטלגרם</a>
-          <a class="btn ghost" href="./investors.html">מעבר לדף המלא למשקיעים</a>
-        </div>
+        <h2>כניסה לבוט המשקיעים</h2>
+        <div class="muted">הבוט מציג נתונים אישיים בזמן אמת, יתרות פנימיות, הפניות, בקשת השקעה, ודוחות.</div>
+        <a class="btn primary" href="https://t.me/crypto_A_bot">כניסה לבוט בטלגרם</a>
+        <a class="btn" href="./investors.html">דף מידע מלא למשקיעים</a>
 
-        <h2 style="margin-top:18px;">מה הבוט יודע לעשות?</h2>
         <ul>
-          <li><b>/whoami</b> – Telegram ID, כתובת BNB, סטטוס משקיע</li>
-          <li><b>/balance</b> + <b>/statement</b> – יתרות ודו״ח תנועות (Ledger פנימי)</li>
-          <li><b>/myplan</b> – פוזיציות חודשיות פתוחות</li>
-          <li><b>/transfer</b> – העברת SLHA פנימית בין משתמשים</li>
-          <li><b>/redeem</b> – בקשת פדיון SLHA (מבוקרת אדמין)</li>
+          <li><b>זיהוי וסטטוס:</b> <code>/whoami</code> • <code>/wallet</code></li>
+          <li><b>יתרות ודוחות:</b> <code>/balance</code> • <code>/statement</code></li>
+          <li><b>הפניות:</b> <code>/referrals</code> (קישור אישי + מונה)</li>
+          <li><b>Stage 2:</b> <code>/transfer</code> (העברת SLHA) • <code>/redeem</code> (בקשת פדיון)</li>
         </ul>
-        <p class="small">
-          הערה: זהו מוצר טכנולוגי/מידעי בלבד ולא ייעוץ השקעות.
-        </p>
       </div>
 
       <div class="card">
-        <h2>BNB Smart Chain</h2>
-        <p>SLH Token – חוזה אמיתי על BSC. (הקישור המדויק לחוזה יופיע כאן ברגע שתעדכן אותו בדוקס.)</p>
-        <div class="btns">
-          <a class="btn ghost" href="https://bscscan.com/" target="_blank" rel="noopener">BscScan</a>
-          <a class="btn ghost" href="./investors.html#faq">שאלות נפוצות</a>
-        </div>
+        <h2>איך זה עובד בפשטות</h2>
+        <ol>
+          <li>נרשמים בבוט ומקשרים כתובת BNB.</li>
+          <li>מגישים בקשת השקעה – האדמין מאשר ופותח “Investor Wallet”.</li>
+          <li>המערכת מנהלת <b>Ledger פנימי</b> (רשומות חשבונאיות) לתיעוד שקוף של נקודות/יתרות.</li>
+          <li>בשלב הזה – <b>אין שליחה אוטומטית און־צ’יין</b>. יש Hook מוכן בלבד (כבוי).</li>
+        </ol>
+        <div class="muted">המערכת בנויה כך שכל פעולה נשמרת כרשומה ונבדקת (Audit-friendly).</div>
+      </div>
+    </div>
 
-        <h2 style="margin-top:18px;">שיתוף למשקיעים</h2>
-        <ul>
-          <li>שלח את הלינק לבוט</li>
-          <li>שלח את דף המשקיעים (העמוד הזה / investors.html)</li>
-        </ul>
+    <div class="card">
+      <h2>קישורים שימושיים למשקיעים</h2>
+      <a class="btn" href="https://slhglobalinvestments-production.up.railway.app/health">API: /health</a>
+      <a class="btn" href="https://slhglobalinvestments-production.up.railway.app/selftest">API: /selftest</a>
+      <a class="btn" href="./investors.html">מפרט למשתמש/משקיע</a>
+      <div class="muted" style="margin-top:10px">
+        הערה: המערכת מספקת מידע ותיעוד. אינה ייעוץ השקעות.
       </div>
     </div>
   </div>

@@ -1,10 +1,6 @@
-# app/schemas.py
-from __future__ import annotations
-
-from datetime import datetime
+from pydantic import BaseModel
 from typing import Optional
-
-from pydantic import BaseModel, ConfigDict
+from datetime import datetime
 
 
 class UserBase(BaseModel):
@@ -14,18 +10,20 @@ class UserBase(BaseModel):
 
 
 class UserOut(UserBase):
-    model_config = ConfigDict(from_attributes=True)
-
     balance_slh: float
     created_at: datetime
 
+    class Config:
+        from_attributes = True
+
 
 class TransactionBase(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     from_user: Optional[int] = None
     to_user: Optional[int] = None
     amount_slh: float
     status: str
     type: str
     created_at: datetime
+
+    class Config:
+        from_attributes = True

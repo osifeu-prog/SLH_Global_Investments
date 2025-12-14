@@ -1,61 +1,74 @@
 # SLH Global Investments
 
-## What is this?
-SLH Global Investments is a private investment platform combining:
-- A secure internal ledger
-- Monthly investment plans (30 days)
-- Guaranteed 4% monthly return (backed by real-world reserves)
-- Internal reward points (SLHA)
-- Optional crypto redemption (future stage)
+מערכת השקעות/משקיעים מבוססת:
+- FastAPI (API + Webhook ל־Telegram)
+- PostgreSQL (Ledger פנימי + טבלאות מערכת)
+- Bot טלגרם להצגת פרופיל, יתרות, דוחות, הפניות, ובקשות השקעה/פדיון
+- דפי מידע סטטיים למשקיעים (GitHub Pages תחת `docs/`)
 
-This platform is **not DeFi gambling**.
-It is a controlled, audited investment system.
+> המערכת מספקת מידע ותיעוד תפעולי. אינה ייעוץ השקעות.
 
----
+## מה עובד כרגע (Production)
 
-## Investment Model (Simple)
+### Endpoints
+- `GET /health` – סטטוס בסיסי
+- `GET /ready` – בדיקות חיות (ENV + DB)
+- `GET /selftest` – בדיקות חיות (ENV + DB + BSC RPC)
 
-1. You invest funds (USDT_TON).
-2. Funds are locked for **30 days**.
-3. After 30 days, you receive:
-   - Your principal (tracked internally)
-   - **4% reward paid as SLHA points**
-4. SLHA points can later be:
-   - Redeemed internally
-   - Converted to SLH tokens (future)
-   - Used inside the ecosystem
+### Telegram Bot (Webhook)
+הבוט מאפשר:
+- `/start`, `/menu`, `/help`
+- `/whoami` – פרופיל משקיע
+- `/wallet` – רשימת ארנקים פנימיים (base / investor)
+- `/balance` – יתרות לפי Ledger פנימי
+- `/statement` – תנועות אחרונות
+- `/referrals` – קישור אישי + מונה הפניות
+- `/invest` – בקשת השקעה (נפתח Investor Wallet אחרי אישור אדמין)
+- `/link_wallet` – קישור כתובת BNB
 
-No daily compounding.
-No hidden fees.
-No leverage.
+## Stage 2: העברות פנימיות + פדיון (SLHA)
 
----
+### העברת SLHA בין משתמשים
+- `/transfer <telegram_id> <amount>`
 
-## Transparency & Security
+העברה נרשמת:
+- כ־Ledger OUT אצל השולח
+- כ־Ledger IN אצל המקבל
+- ובטבלת `internal_transfers` לצורכי Audit
 
-- Every action is recorded in an internal ledger
-- Admin-controlled deposits only
-- Full audit trail
-- Separation between real funds and reward points
-- Designed for future banking-grade compliance
+### בקשת פדיון SLHA (עם נעילה)
+- `/redeem <amount> [regular|early] [payout_address(optional)]`
 
----
+בעת פתיחת בקשה הסכום “ננעל” ב־Ledger כדי למנוע העברה כפולה בזמן המתנה.
+דחייה משחררת את הנעילה.
 
-## Status
+### אדמין
+- `/admin_redemptions [status]`
+- `/admin_approve_redeem <id>`
+- `/admin_reject_redeem <id> [note]`
 
-✅ Production running  
-✅ Telegram bot active  
-✅ Monthly plan implemented  
-⏳ Redemption & internal transfers (next phase)
+## On-chain (מוכן, כבוי)
+יש Hook מוכן לפדיון SLH און־צ’יין (`send_slh_onchain`) אך הוא **כבוי בכוונה** ולא שולח שום דבר אוטומטית.
 
----
+## הרצה מקומית
 
-## Disclaimer
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
 
-This is a private investment platform.
-All returns are backed by real-world business activity.
-Crypto tokens are used as a **utility and reward mechanism**, not as a promise.
+# נדרש PostgreSQL + DATABASE_URL
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
+```
 
----
+## משתני סביבה (Railway)
+העיקריים:
+- `DATABASE_URL`
+- `BOT_TOKEN` (אופציונלי – אם חסר, הבוט מנוטרל)
+- `WEBHOOK_URL` (אופציונלי – אם קיים, הבוט מגדיר webhook אוטומטי)
+- `ADMIN_USER_ID`
 
-© SLH Global Investments
+## GitHub Pages (דפי משקיעים)
+התיקייה `docs/` מכילה:
+- `docs/index.html` – שער משקיעים
+- `docs/investors.html` – דף מידע מלא למשקיעים
