@@ -78,16 +78,18 @@ def db_get_or_create_wallet(
 ) -> models.Wallet:
     w = db_get_wallet(db, telegram_id, wallet_type)
     if w:
-        # keep toggles aligned
         w.kind = kind
         w.deposits_enabled = deposits_enabled
         w.withdrawals_enabled = withdrawals_enabled
+
+        # keep NOT NULL columns safe
         if w.is_active is None:
             w.is_active = True
         if w.balance_slh is None:
             w.balance_slh = Decimal("0")
         if w.balance_slha is None:
             w.balance_slha = Decimal("0")
+
         db.add(w)
         db.commit()
         db.refresh(w)
@@ -163,9 +165,10 @@ def db_start_invest_onboarding(
 ) -> models.InvestorProfile:
     prof = db_get_investor_profile(db, telegram_id)
     if prof:
-        # re-request allowed
-        prof.status = "candidate"  # must be NOT NULL
-        prof.risk_ack = bool(getattr(prof, "risk_ack", False))  # keep safe
+        prof.status = "candidate"
+        # keep safe / not null
+        if getattr(prof, "risk_ack", None) is None:
+            prof.risk_ack = False
         if referrer_tid is not None:
             prof.referrer_tid = referrer_tid
         if note is not None:
@@ -176,8 +179,8 @@ def db_start_invest_onboarding(
     else:
         prof = models.InvestorProfile(
             telegram_id=telegram_id,
-            status="candidate",       # REQUIRED (no default in DB)
-            risk_ack=False,           # REQUIRED (NOT NULL)
+            status="candidate",       # REQUIRED (DB)
+            risk_ack=False,           # REQUIRED (DB)
             referrer_tid=referrer_tid,
             note=note,
             created_at=_utcnow(),
@@ -344,6 +347,105 @@ class InvestorWalletBot:
             withdrawals_enabled=False,
         )
 
+    # --------- "send" helpers (used by both commands & callbacks) ---------
+
+    async def _send_whoami(self, chat_message, tg_user):
+        db = self._db()
+        try:
+            user = db_get_or_create_user(db, tg_user.id, tg_user.username)
+            prof = db_get_investor_profile(db, tg_user.id)
+            status = str(prof.status) if prof else "אין"
+
+            txt = (
+                "👤 פרופיל\n\n"
+                f"ID: {tg_user.id}\n"
+                f"שם משתמש: @{tg_user.username}\n"
+                f"BNB: {user.bnb_address or 'לא מחובר'}\n"
+                f"SLH (פנימי): {Decimal(user.balance_slh or 0):,.6f}\n"
+                f"SLHA (נקודות): {Decimal(user.slha_balance or 0):,.8f}\n\n"
+                f"סטטוס משקיע: {status}\n"
+            )
+            await chat_message.reply_text(txt)
+        finally:
+            db.close()
+
+    async def _send_wallets(self, chat_message, tg_user):
+        db = self._db()
+        try:
+            self._ensure_base_wallet(db, tg_user.id)
+
+            wallets = (
+                db.query(models.Wallet)
+                .filter(models.Wallet.telegram_id == tg_user.id)
+                .order_by(models.Wallet.wallet_type.asc())
+                .all()
+            )
+
+            lines = ["💼 הארנקים שלך:\n"]
+            for w in wallets:
+                lines.append(
+                    f"- {w.wallet_type.upper()} | "
+                    f"סוג: {w.kind} | "
+                    f"הפקדות: {'✅' if w.deposits_enabled else '❌'} | "
+                    f"משיכות: {'✅' if w.withdrawals_enabled else '❌'} | "
+                    f"SLH: {Decimal(w.balance_slh or 0):,.6f} | "
+                    f"SLHA: {Decimal(w.balance_slha or 0):,.8f}"
+                )
+
+            await chat_message.reply_text("\n".join(lines))
+        finally:
+            db.close()
+
+    async def _send_referrals(self, chat_message, tg_user):
+        db = self._db()
+        try:
+            count = db_count_referrals(db, tg_user.id)
+            bot_username = self._bot_username or "YOUR_BOT"
+            link = f"https://t.me/{bot_username}?start=ref_{tg_user.id}"
+
+            txt = (
+                "🎁 תוכנית הפניות\n\n"
+                f"קישור אישי:\n{link}\n\n"
+                f"מספר הפניות: {count}\n"
+            )
+            await chat_message.reply_text(txt)
+        finally:
+            db.close()
+
+    async def _send_invest(self, chat_message, tg_user):
+        db = self._db()
+        try:
+            self._ensure_base_wallet(db, tg_user.id)
+
+            if db_is_investor_active(db, tg_user.id):
+                await chat_message.reply_text("✅ כבר יש לך סטטוס משקיע פעיל.")
+                return
+
+            # find referrer if exists
+            ref = (
+                db.query(models.Referral)
+                .filter(models.Referral.referred_tid == tg_user.id)
+                .order_by(models.Referral.id.desc())
+                .first()
+            )
+            referrer_tid = ref.referrer_tid if ref else None
+
+            db_start_invest_onboarding(
+                db,
+                tg_user.id,
+                referrer_tid=referrer_tid,
+                note="Requested via bot",
+            )
+
+            await chat_message.reply_text(
+                "📥 בקשת השקעה נשלחה.\n\n"
+                "נפתח לך ארנק משקיע (הפקדות בלבד).\n"
+                "לאחר אישור אדמין – הסטטוס יעודכן ותיפתח גישה מלאה.\n\n"
+                "אם אתה אדמין: השתמש ב־/admin"
+            )
+        finally:
+            db.close()
+
     # --------- Commands ---------
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -352,7 +454,7 @@ class InvestorWalletBot:
 
         db = self._db()
         try:
-            user = db_get_or_create_user(db, tg.id, tg.username)
+            db_get_or_create_user(db, tg.id, tg.username)
             self._ensure_base_wallet(db, tg.id)
 
             # referral capture: /start ref_<id>
@@ -361,7 +463,6 @@ class InvestorWalletBot:
                     referrer_tid = int(start_payload.replace("ref_", "").strip())
                     created = db_apply_referral(db, referrer_tid, tg.id)
                     if created:
-                        # optional reward: add SLHA to referrer (simple, safe)
                         reward = getattr(settings, "SLHA_REWARD_REFERRAL", None)
                         if reward:
                             ref_user = db_get_or_create_user(db, referrer_tid, None)
@@ -402,114 +503,20 @@ class InvestorWalletBot:
         )
 
     async def cmd_whoami(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        tg = update.effective_user
-        db = self._db()
-        try:
-            user = db_get_or_create_user(db, tg.id, tg.username)
-            prof = db_get_investor_profile(db, tg.id)
-
-            status = "אין"
-            if prof:
-                status = str(prof.status)
-
-            txt = (
-                "👤 פרופיל\n\n"
-                f"ID: {tg.id}\n"
-                f"שם משתמש: @{tg.username}\n"
-                f"BNB: {user.bnb_address or 'לא מחובר'}\n"
-                f"SLH (פנימי): {Decimal(user.balance_slh or 0):,.6f}\n"
-                f"SLHA (נקודות): {Decimal(user.slha_balance or 0):,.8f}\n\n"
-                f"סטטוס משקיע: {status}\n"
-            )
-            await update.message.reply_text(txt)
-        finally:
-            db.close()
+        await self._send_whoami(update.message, update.effective_user)
 
     async def cmd_wallet(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        tg = update.effective_user
-        db = self._db()
-        try:
-            self._ensure_base_wallet(db, tg.id)
-
-            wallets = (
-                db.query(models.Wallet)
-                .filter(models.Wallet.telegram_id == tg.id)
-                .order_by(models.Wallet.wallet_type.asc())
-                .all()
-            )
-
-            lines = ["💼 הארנקים שלך:\n"]
-            for w in wallets:
-                lines.append(
-                    f"- {w.wallet_type.upper()} | "
-                    f"סוג: {w.kind} | "
-                    f"הפקדות: {'✅' if w.deposits_enabled else '❌'} | "
-                    f"משיכות: {'✅' if w.withdrawals_enabled else '❌'} | "
-                    f"SLH: {Decimal(w.balance_slh or 0):,.6f} | "
-                    f"SLHA: {Decimal(w.balance_slha or 0):,.8f}"
-                )
-
-            await update.message.reply_text("\n".join(lines))
-        finally:
-            db.close()
+        await self._send_wallets(update.message, update.effective_user)
 
     async def cmd_referrals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        tg = update.effective_user
-        db = self._db()
-        try:
-            count = db_count_referrals(db, tg.id)
-            bot_username = self._bot_username or "YOUR_BOT"
-            link = f"https://t.me/{bot_username}?start=ref_{tg.id}"
-            txt = (
-                "🎁 תוכנית הפניות\n\n"
-                f"קישור אישי:\n{link}\n\n"
-                f"מספר הפניות: {count}\n"
-            )
-            await update.message.reply_text(txt)
-        finally:
-            db.close()
+        await self._send_referrals(update.message, update.effective_user)
 
     async def cmd_link_wallet(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = STATE_AWAITING_BNB_ADDRESS
         await update.message.reply_text("שלח עכשיו כתובת BNB (מתחילה ב-0x...)")
 
     async def cmd_invest(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        tg = update.effective_user
-        db = self._db()
-        try:
-            self._ensure_base_wallet(db, tg.id)
-
-            if db_is_investor_active(db, tg.id):
-                await update.message.reply_text("✅ כבר יש לך סטטוס משקיע פעיל.")
-                return
-
-            # optional: if user joined via referral, store it in profile
-            # (we can take the latest referrer if exists)
-            ref = (
-                db.query(models.Referral)
-                .filter(models.Referral.referred_tid == tg.id)
-                .order_by(models.Referral.id.desc())
-                .first()
-            )
-            referrer_tid = ref.referrer_tid if ref else None
-
-            # IMPORTANT: supply status + risk_ack to avoid DB crash
-            db_start_invest_onboarding(
-                db,
-                tg.id,
-                referrer_tid=referrer_tid,
-                note="Requested via bot",
-            )
-
-            # create investor wallet already done in onboarding
-            await update.message.reply_text(
-                "📥 בקשת השקעה נשלחה.\n\n"
-                "נפתח לך ארנק משקיע (הפקדות בלבד).\n"
-                "לאחר אישור אדמין – הסטטוס יעודכן ותיפתח גישה מלאה.\n\n"
-                "אם אתה אדמין: השתמש ב־/admin"
-            )
-        finally:
-            db.close()
+        await self._send_invest(update.message, update.effective_user)
 
     async def cmd_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_admin(update.effective_user.id):
@@ -547,7 +554,7 @@ class InvestorWalletBot:
         finally:
             db.close()
 
-    # --------- Callback menu ---------
+    # --------- Callback menu (NO Fake Update) ---------
 
     async def cb_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         q = update.callback_query
@@ -555,36 +562,31 @@ class InvestorWalletBot:
 
         data = q.data or ""
         tg = update.effective_user
+        msg = q.message  # this is a Message – reply on it
 
-        # Route callbacks
         if data == "MENU:WHOAMI":
-            fake = _FakeMessageUpdate(update, q.message)
-            await self.cmd_whoami(fake, context)
+            await self._send_whoami(msg, tg)
             return
 
         if data == "MENU:WALLETS":
-            fake = _FakeMessageUpdate(update, q.message)
-            await self.cmd_wallet(fake, context)
+            await self._send_wallets(msg, tg)
             return
 
         if data == "MENU:REFERRALS":
-            fake = _FakeMessageUpdate(update, q.message)
-            await self.cmd_referrals(fake, context)
+            await self._send_referrals(msg, tg)
             return
 
         if data == "MENU:INVEST":
-            fake = _FakeMessageUpdate(update, q.message)
-            await self.cmd_invest(fake, context)
+            await self._send_invest(msg, tg)
             return
 
         if data == "MENU:LINK_BNB":
-            fake = _FakeMessageUpdate(update, q.message)
-            await self.cmd_link_wallet(fake, context)
+            context.user_data["state"] = STATE_AWAITING_BNB_ADDRESS
+            await msg.reply_text("שלח עכשיו כתובת BNB (מתחילה ב-0x...)")
             return
 
         if data == "MENU:HELP":
-            fake = _FakeMessageUpdate(update, q.message)
-            await self.cmd_help(fake, context)
+            await msg.reply_text("נסה /menu או /help")
             return
 
         # Admin callbacks
@@ -606,21 +608,21 @@ class InvestorWalletBot:
                 )
             finally:
                 db.close()
-            await q.message.reply_text(txt)
+            await msg.reply_text(txt)
             return
 
         if data == "ADMIN:APPROVE":
             if not self._is_admin(tg.id):
                 return
             context.user_data["admin_state"] = "AWAIT_APPROVE_ID"
-            await q.message.reply_text("שלח Telegram ID לאישור (מספר בלבד).")
+            await msg.reply_text("שלח Telegram ID לאישור (מספר בלבד).")
             return
 
         if data == "ADMIN:REJECT":
             if not self._is_admin(tg.id):
                 return
             context.user_data["admin_state"] = "AWAIT_REJECT_ID"
-            await q.message.reply_text("שלח Telegram ID לדחייה (מספר בלבד).")
+            await msg.reply_text("שלח Telegram ID לדחייה (מספר בלבד).")
             return
 
     # --------- Text ---------
@@ -666,22 +668,6 @@ class InvestorWalletBot:
             return
 
         await update.message.reply_text("לא הבנתי. נסה /menu")
-
-
-class _FakeMessageUpdate(Update):
-    """Helper to reuse command handlers for callback queries."""
-    def __init__(self, original: Update, message):
-        super().__init__(update_id=original.update_id)
-        self._effective_user = original.effective_user
-        self._message = message
-
-    @property
-    def effective_user(self):
-        return self._effective_user
-
-    @property
-    def message(self):
-        return self._message
 
 
 # --------- bootstrap ---------
