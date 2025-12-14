@@ -23,6 +23,7 @@ from app import crud
 logger = logging.getLogger(__name__)
 
 STATE_AWAITING_BNB_ADDRESS = "AWAITING_BNB_ADDRESS"
+STATE_AWAITING_TRANSFER = "AWAITING_TRANSFER"  # ✅ added (optional)
 
 
 def _dec(x) -> Decimal:
@@ -66,7 +67,10 @@ class InvestorWalletBot:
                     InlineKeyboardButton("🔗 קישור כתובת BNB", callback_data="MENU:LINK_BNB"),
                 ],
                 [
+                    InlineKeyboardButton("🔁 העברת SLHA", callback_data="MENU:TRANSFER_SLHA"),  # ✅ added (optional)
                     InlineKeyboardButton("❓ עזרה", callback_data="MENU:HELP"),
+                ],
+                [
                     InlineKeyboardButton("🛠 אדמין", callback_data="MENU:ADMIN"),
                 ],
             ]
@@ -102,6 +106,9 @@ class InvestorWalletBot:
         self.application.add_handler(CommandHandler("balance", self.cmd_balance))
         self.application.add_handler(CommandHandler("statement", self.cmd_statement))
         self.application.add_handler(CommandHandler("admin", self.cmd_admin))
+
+        # ✅ SLHA transfers
+        self.application.add_handler(CommandHandler("transfer", self.cmd_transfer))
 
         # Callback menu
         self.application.add_handler(CallbackQueryHandler(self.cb_menu))
@@ -213,6 +220,7 @@ class InvestorWalletBot:
             "/referrals – הפניות\n"
             "/invest – בקשת השקעה\n"
             "/link_wallet – קישור כתובת BNB\n"
+            "/transfer <telegram_id> <amount> [note] – העברת SLHA פנימית ✅\n"
         )
         if self._is_admin(update.effective_user.id):
             txt += "\n/admin – פאנל אדמין"
@@ -385,6 +393,64 @@ class InvestorWalletBot:
             return
         await update.message.reply_text("🛠 פאנל אדמין:", reply_markup=self._admin_markup())
 
+    # ✅ NEW: /transfer command (SLHA only)
+    async def cmd_transfer(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        /transfer <telegram_id> <amount> [note]
+        SLHA internal transfer only.
+        """
+        tg = update.effective_user
+
+        if not context.args or len(context.args) < 2:
+            await update.message.reply_text("שימוש: /transfer <telegram_id> <amount> [note]")
+            return
+
+        try:
+            to_tid = int(str(context.args[0]).strip())
+        except Exception:
+            await update.message.reply_text("telegram_id לא תקין (צריך מספר).")
+            return
+
+        try:
+            amount = Decimal(str(context.args[1]).strip())
+        except Exception:
+            await update.message.reply_text("amount לא תקין.")
+            return
+
+        note = " ".join(context.args[2:]).strip() if len(context.args) > 2 else None
+
+        if amount <= 0:
+            await update.message.reply_text("amount חייב להיות גדול מ-0.")
+            return
+        if to_tid == tg.id:
+            await update.message.reply_text("אי אפשר להעביר לעצמך.")
+            return
+
+        db = self._db()
+        try:
+            # make sure users exist
+            crud.get_or_create_user(db, tg.id, tg.username)
+            crud.get_or_create_user(db, to_tid, None)
+
+            res = crud.transfer_slha(
+                db,
+                from_tid=tg.id,
+                to_tid=to_tid,
+                amount=amount,
+                note=note,
+            )
+
+            await update.message.reply_text(
+                "✅ בוצעה העברה (SLHA)\n\n"
+                f"אל: {to_tid}\n"
+                f"סכום: {res.get('amount', str(amount))} SLHA\n"
+                f"יתרה חדשה (שולח): {res.get('from_balance', '—')}\n"
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ לא ניתן לבצע העברה: {e}")
+        finally:
+            db.close()
+
     # -------- Callback menu (NO fake updates) --------
 
     async def cb_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -419,6 +485,13 @@ class InvestorWalletBot:
             context.user_data["state"] = STATE_AWAITING_BNB_ADDRESS
             await q.message.reply_text("שלח עכשיו כתובת BNB (מתחילה ב-0x...)")
             return
+
+        # ✅ added (optional): menu transfer prompt
+        if data == "MENU:TRANSFER_SLHA":
+            context.user_data["state"] = STATE_AWAITING_TRANSFER
+            await q.message.reply_text("שלח: <telegram_id> <amount> [note]\nדוגמה: 123456789 10 תודה")
+            return
+
         if data == "MENU:HELP":
             await q.message.reply_text("נסה /help או /menu")
             return
@@ -619,8 +692,40 @@ class InvestorWalletBot:
                 await update.message.reply_text("נא לשלוח מספר בלבד.")
             return
 
-        # User state: awaiting BNB address
+        # ✅ Optional: transfer state via menu
         state = context.user_data.get("state")
+        if state == STATE_AWAITING_TRANSFER:
+            context.user_data["state"] = None
+            parts = txt.split()
+            if len(parts) < 2:
+                await update.message.reply_text("פורמט לא תקין. שלח: <telegram_id> <amount> [note]")
+                return
+            try:
+                to_tid = int(parts[0])
+                amount = Decimal(parts[1])
+            except Exception:
+                await update.message.reply_text("telegram_id/amount לא תקינים.")
+                return
+            note = " ".join(parts[2:]).strip() if len(parts) > 2 else None
+
+            db = self._db()
+            try:
+                crud.get_or_create_user(db, update.effective_user.id, update.effective_user.username)
+                crud.get_or_create_user(db, to_tid, None)
+                res = crud.transfer_slha(db, from_tid=update.effective_user.id, to_tid=to_tid, amount=amount, note=note)
+                await update.message.reply_text(
+                    "✅ בוצעה העברה (SLHA)\n\n"
+                    f"אל: {to_tid}\n"
+                    f"סכום: {res.get('amount', str(amount))} SLHA\n"
+                    f"יתרה חדשה (שולח): {res.get('from_balance', '—')}\n"
+                )
+            except Exception as e:
+                await update.message.reply_text(f"❌ לא ניתן לבצע העברה: {e}")
+            finally:
+                db.close()
+            return
+
+        # User state: awaiting BNB address
         if state == STATE_AWAITING_BNB_ADDRESS:
             context.user_data["state"] = None
             if not (txt.startswith("0x") and len(txt) >= 10):
